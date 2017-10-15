@@ -26,24 +26,25 @@ class PTBInput(object):
     self.input_data, self.targets = reader.ptb_producer(
         data, batch_size, num_steps, name=name)
 
+
 class Parameters():
-    encoder_hidden = 350  # std=191, inputless_dec=350
-    decoder_hidden = 350
+    encoder_hidden = 500  # std=191, inputless_dec=350
+    decoder_hidden = 500
     rnn_layers = 1
     decoder_rnn_layers = 1
-    batch_size = 100
-    latent_size = 111  # std=13, inputless_dec=111
-    embed_size = 499 # std=353, inputless_dec=499
+    batch_size = 40
+    latent_size = 100  # std=13, inputless_dec=111
+    embed_size = 353 # std=353, inputless_dec=499
     num_epochs = 40
-    learning_rate = 0.0001
+    learning_rate = 0.001
     sent_max_size = 128
     base_cell = tf.contrib.rnn.GRUCell
     temperature = 1.0
     gen_length = 50
     keep_rate = 0.62
     dec_keep_rate = 1.0
-    highway_lc = 99
-    highway_ls = 50
+    highway_lc = 32
+    highway_ls = 191
     is_training = True
     LOG_DIR = './model_logs/'
     datasets = ['GOT', 'PTB']
@@ -52,7 +53,7 @@ class Parameters():
 params = Parameters()
 
 
-def online_inference(sess, data_dict, sample, seq, in_state=None, out_state=None, seed='<BOS>', length=[1]):
+def online_inference(sess, data_dict, sample, seq, in_state=None, out_state=None, seed='king', length=[1]):
     """ Generate sequence one character at a time, based on the previous character
     """
     sentence = [seed]
@@ -84,6 +85,7 @@ def q_net(x, seq_len, batch_size=params.batch_size):
                                                 initial_state=initial, swap_memory=True, dtype=tf.float32)
         final_output = tf.reshape(outputs[:, -1, :], [batch_size, -1])
         tf.summary.histogram('encoder_out', final_output)
+        # Higway network [S.Sementiuta et.al]
         for i in range(params.highway_lc):
             with tf.name_scope("layer{0}".format(i)) as scope:
                 if i == 0:  # first, input layer
@@ -107,10 +109,6 @@ def q_net(x, seq_len, batch_size=params.batch_size):
 def vae_lstm(observed, batch_size, d_seq_l, embed, d_inputs, vocab_size):
     with zs.BayesianNet(observed=observed) as decoder:
         # prepare input
-        eos_input = tf.tile(tf.reshape(tf.convert_to_tensor([data_dict.word2idx['<BOS>']]), [1, 1]),
-                            (batch_size, 1))
-        if params.is_training:
-            d_inputs = tf.concat([eos_input, d_inputs[:, :-1]], 1)
         z_mean = tf.zeros([batch_size, params.latent_size])
         z_logstd = tf.zeros([batch_size, params.latent_size])
         z = zs.Normal('z', mean=z_mean, logstd=z_logstd, group_event_ndims=1)
@@ -135,8 +133,6 @@ def vae_lstm(observed, batch_size, d_seq_l, embed, d_inputs, vocab_size):
         sample = tf.squeeze(x[:, -1])
         return decoder, x_logits, initial_state, final_state, sample
 
-# TODO: add dropout?
-# TODO: what feeed to the decoder?
 # TODO: print values of input and decoder output
 if __name__ == "__main__":
     if params.input == 'GOT':
@@ -215,14 +211,10 @@ if __name__ == "__main__":
                     pad = len(max(batch, key=len))
                     # not optimal!!
                     length_ = np.array([len(sent) for sent in batch]).reshape(params.batch_size)
-                    batch = np.array([sent + [0] * (pad - len(sent)) for sent in batch])
+                    batch = np.flip(np.array([sent + [0] * (pad - len(sent)) for sent in batch]), 1)
                     l_batch = labels_arr[it * params.batch_size:(it + 1) * params.batch_size]
                     l_batch = np.array([(sent + [0] * (pad - len(sent))) for sent in l_batch])
-                    #elif params.input == 'PTB':
-                        #batch, l_batch = reader.ptb_producer(train_data, params.batch_size, num_iters, name='train')
-                    # TODO: Feed values
-
-                    feed = {inputs: batch, d_inputs_ps: batch, labels: l_batch, seq_length: length_, d_seq_length: length_}
+                    feed = {inputs: batch, d_inputs_ps: l_batch, labels: l_batch, seq_length: length_, d_seq_length: length_}
                     lb, _, kld_ = sess.run([lower_bound, optimize, kld], feed_dict=feed)
                     cur_it += 1
                     if cur_it % 100 == 0 and cur_it != 0:

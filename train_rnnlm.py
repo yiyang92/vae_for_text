@@ -11,16 +11,16 @@ import utils.model as model
 params = {
     'batch_size': 20,
     'num_epochs': 20,
-    'embed_size': 500,
-    'num_hidden': 1100,
+    'embed_size': 464,
+    'num_hidden': 337,
     'num_layers': 1,
     'learning_rate': 0.001,
     'mode_train': True,
     'sent_max_size': 228,
     'gen_length': 20,
     'temperature': 0.5,
-    'keep_rate': 0.6,
-    'input': ['GOT', 'PTB'][0]
+    'keep_rate': 0.66,
+    'input': ['GOT', 'PTB'][1]
 }
 
 
@@ -31,7 +31,8 @@ def online_inference(sess, data_dict, sample, seq, in_state=None, out_state=None
     state = None
     for _ in range(params['gen_length']):
         input_sent_vect = [data_dict.word2idx[word] for word in sentence]
-        feed = {seq: np.array(input_sent_vect).reshape([1, len(input_sent_vect)]), length: [len(input_sent_vect)]}
+        feed = {seq: np.array(input_sent_vect).reshape([1, len(input_sent_vect)]), length: [len(input_sent_vect)],
+                keep_rate: 1.0}
         # for the first decoder step, the state is None
         if state is not None:
              feed.update({in_state: state})
@@ -54,6 +55,8 @@ if __name__ == "__main__":
         print(labels[1])
         print("----Corpus_Information--- \n Raw data size: {} sentences \n Vocabulary size {}" 
               "\n Limited data size {} sentences".format(len(data_raw), data_dict.vocab_size,  len(data)))
+        vocab_size = data_dict.vocab_size
+        print("Most common words : {}", [data_dict.idx2word[i] for i in range(vocab_size - 1, vocab_size - 7, -1)])
         del(data_raw)
     elif params['input'] == 'PTB':
         # data in form [data, labels]
@@ -62,8 +65,10 @@ if __name__ == "__main__":
         print(len(train_data_raw))
         print(train_data_raw[0:2])
         data_dict = data_.Dictionary(train_data_raw)
+        vocab_size = data_dict.vocab_size
         print("----Corpus_Information--- \n Train data size: {} sentences \n Vocabulary size {}"
-              "\n Test data size {}".format(len(train_data_raw), data_dict.vocab_size, len(test_data_raw)))
+              "\n Test data size {}".format(len(train_data_raw), vocab_size, len(test_data_raw)))
+        print("Most common words : {}", [data_dict.idx2word[i] for i in range(vocab_size-1, vocab_size-7, -1)])
         # raw data ['<BOS>'...'<EOS>']
         # TODO: use test dataset for perplexity calculation
         data = [[data_dict.word2idx[word] for word in sent[:-1]] for sent in train_data_raw]
@@ -75,10 +80,11 @@ if __name__ == "__main__":
                 "embedding", [data_dict.vocab_size, params['embed_size']], dtype=tf.float32)
             vect_inputs = tf.nn.embedding_lookup(embedding, inputs)
         # inputs = tf.unstack(inputs, num=num_steps, axis=1)
+        keep_rate = tf.placeholder(tf.float32)
         if params['mode_train'] and params['keep_rate'] < 1:
-            vect_inputs = tf.nn.dropout(vect_inputs, params['keep_rate'])
-        labels = tf.placeholder(shape=[None, None], dtype=tf.int64)
+            vect_inputs = tf.nn.dropout(vect_inputs, keep_rate)
 
+        labels = tf.placeholder(shape=[None, None], dtype=tf.int64)
         cell = model.make_rnn_cell([params['num_hidden']]*params['num_layers'],
                                    base_cell=tf.contrib.rnn.GRUCell)
 
@@ -98,9 +104,13 @@ if __name__ == "__main__":
         prnt = tf.Print(fc_layer, [tf.shape(final_state), tf.shape(zs)])
         # define optimization with lr decay, lr decay can be use with SGD oprtimizer
         global_step = tf.Variable(0, trainable=False)
-        learning_rate = tf.train.exponential_decay(params['learning_rate'], global_step, 500, 0.96)
+        # learning_rate = tf.train.exponential_decay(params['learning_rate'], global_step, 500, 0.96)
         loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(labels=labels, logits=fc_layer))
-        optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(loss)
+        # clip gradients
+        gradients = tf.gradients(loss, tf.trainable_variables())
+        opt = tf.train.AdamOptimizer(learning_rate=params['learning_rate'])
+        clipped_grad, _ = tf.clip_by_global_norm(gradients, 1)
+        optimizer = opt.apply_gradients(zip(clipped_grad, tf.trainable_variables()))
         # not possible to use seq2seq loss with different lengths
         predictions = tf.argmax(fc_layer, axis=2)
         corr_predictions = tf.to_float(tf.equal(labels, predictions))
@@ -127,11 +137,13 @@ if __name__ == "__main__":
                     batch = np.array([sent+[0]*(pad - len(sent)) for sent in batch])
                     l_batch = labels_arr[it * params['batch_size']: (it+1) * params['batch_size']]
                     l_batch = np.array([(sent+[0]*(pad - len(sent))) for sent in l_batch])
-                    feed = {inputs: batch, labels: l_batch, length: length_, global_step: 0}
+                    feed = {inputs: batch, labels: l_batch, length: length_, global_step: 0,
+                            keep_rate: params['keep_rate']}
                     loss_, _, acc = sess.run([loss, optimizer, accuracy], feed_dict=feed)
                     cur_it += 1
                     if it % 250 == 0:
                         params['mode_train'] = False
+                        feed[keep_rate] = 1.0
                         _ = sess.run(prnt, feed_dict=feed)
                         online_inference(sess, data_dict, sample=sample, seq=inputs, in_state=initial_state, out_state=final_state)
                         print("loss after {it} operations: {loss_}, accuracy: {acc}".format(**locals()))

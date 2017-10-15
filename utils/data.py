@@ -135,10 +135,12 @@ class Dictionary(object):
         # sentences - array of sentences
         self._sentences = sentences
         self._word2idx = {}
-        self._idx2word = []
-        self.add_word('<PAD>')
-        self.add_word('<EOS>')
-        self.add_word('<BOS>')
+        self._idx2word = {}
+        self._words = []
+        self.get_words()
+        # add tokens
+        self._words.append('<EOS>')
+        self._words.append('<BOS>')
         self.build_vocabulary()
 
     @property
@@ -160,17 +162,20 @@ class Dictionary(object):
     def seq2dx(self, sentence):
         return [self.word2idx[wd] for wd in sentence]
 
-    def add_word(self, word):
-        if word not in self.word2idx:
-            self.idx2word.append(word)
-            self.word2idx[word] = len(self.idx2word) - 1
-        return self.word2idx[word]
-
-    def build_vocabulary(self):
-        snt = []
+    def get_words(self):
         for sent in self.sentences:
             for word in sent:
-                self.add_word(word)
+                self._words.append(word)
+
+    def build_vocabulary(self):
+        counter = collections.Counter(self._words)
+        sorted_dict = sorted(counter.items(), key= lambda x: (-x[1], x[0]))
+        # after sorting the dictionary, get ordered words
+        words, _ = list(zip(*sorted_dict))
+        self._word2idx = dict(zip(words, range(len(words))))
+        self._idx2word = dict(zip(range(len(words)), words))
+        self._word2idx['<PAD>'] = 0
+        self._idx2word[0] = '<PAD>'
 
     def __len__(self):
         return len(self.idx2word)
