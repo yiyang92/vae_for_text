@@ -90,9 +90,7 @@ if __name__ == "__main__":
 
         initial_state = tf.placeholder_with_default(input=cell.zero_state(tf.shape(vect_inputs)[0], dtype=tf.float32),
                                           shape=[None, None, params['num_hidden']])
-
         zs = cell.zero_state(params['batch_size'], dtype=tf.float32)
-        print(initial_state)
         length = tf.placeholder(shape=[None], dtype=tf.float32)
         ins = tf.reshape(initial_state, [-1, params['num_hidden']])
         # TODO: find a way how to initialize 2-layers network

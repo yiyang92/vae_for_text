@@ -42,10 +42,10 @@ def weight_bias(W_shape, b_shape, bias_init=0.1):
     return W, b
 
 
-def highway_network(x, size, carry_bias=-1.0):
+def highway_network(x, size, carry_bias=-1.0, scope='enc'):
     W, b = weight_bias([size, size], [size])
 
-    with tf.name_scope('transform_gate'):
+    with tf.name_scope('transform_gate{}'.format(scope)):
         W_T, b_T = weight_bias([size, size], [size], bias_init=carry_bias)
 
     T = tf.sigmoid(tf.matmul(x, W_T) + b_T, name="transform_gate")
