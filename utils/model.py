@@ -37,15 +37,15 @@ def make_rnn_cell(rnn_layer_sizes,
 
 
 def weight_bias(W_shape, b_shape, bias_init=0.1):
-    W = tf.Variable(tf.truncated_normal(W_shape, stddev=0.1), name='weight')
-    b = tf.Variable(tf.constant(bias_init, shape=b_shape), name='bias')
+    W = tf.get_variable(name='weight1', shape=W_shape, dtype=tf.float32, initializer=tf.truncated_normal_initializer(stddev=0.1))
+    b = tf.get_variable(name='bias1', shape=b_shape, dtype=tf.float32, initializer=tf.constant_initializer(0.1))
     return W, b
 
 
 def highway_network(x, size, carry_bias=-1.0, scope='enc'):
     W, b = weight_bias([size, size], [size])
 
-    with tf.name_scope('transform_gate{}'.format(scope)):
+    with tf.variable_scope('transform_gate{}'.format(scope)):
         W_T, b_T = weight_bias([size, size], [size], bias_init=carry_bias)
 
     T = tf.sigmoid(tf.matmul(x, W_T) + b_T, name="transform_gate")

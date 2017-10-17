@@ -10,6 +10,7 @@ import utils.data as data_
 
 import utils.model as model
 from utils.ptb import reader
+from tensorflow.python import debug as tf_debug
 
 import numpy as np
 
@@ -33,7 +34,7 @@ class Parameters():
     rnn_layers = 1
     decoder_rnn_layers = 1
     batch_size = 40
-    latent_size = 100  # std=13, inputless_dec=111
+    latent_size = 13  # std=13, inputless_dec=111
     embed_size = 353 # std=353, inputless_dec=499
     num_epochs = 40
     learning_rate = 0.001
@@ -43,12 +44,13 @@ class Parameters():
     gen_length = 50
     keep_rate = 0.62
     dec_keep_rate = 1.0
-    highway_lc = 10
-    highway_ls = 191
+    highway_lc = 2
+    highway_ls = 50
     is_training = True
     LOG_DIR = './model_logs/'
     datasets = ['GOT', 'PTB']
-    input = datasets[1]
+    input = datasets[0]
+    debug = False
 
 params = Parameters()
 
@@ -86,13 +88,14 @@ def q_net(x, seq_len, batch_size=params.batch_size):
         tf.summary.histogram('encoder_out', final_output)
         # Higway network [S.Sementiuta et.al]
         for i in range(params.highway_lc):
-            with tf.name_scope("layer{0}".format(i)) as scope:
+            with tf.variable_scope("hw_layer_enc{0}".format(i)) as scope:
                 if i == 0:  # first, input layer
                     prev_y = tf.layers.dense(final_output, params.highway_ls, tf.nn.relu)
                 elif i == params.highway_lc - 1:  # last, output layer
                     lz_mean = tf.layers.dense(inputs=prev_y, units=params.latent_size)
                     lz_logstd = tf.layers.dense(inputs=prev_y, units=params.latent_size)
                 else:  # hidden layers
+                    print(i)
                     prev_y = model.highway_network(prev_y, params.highway_ls)
 
         # define latent variable`s Stochastic Tensor
@@ -122,7 +125,7 @@ def vae_lstm(observed, batch_size, d_seq_l, embed, d_inputs, vocab_size):
         #inputs = tf.concat([dec_inps, z_out], 2)
         # Higway network [S.Sementiuta et.al]
         for i in range(params.highway_lc):
-            with tf.name_scope("dec_layer{0}".format(i)) as scope:
+            with tf.variable_scope("hw_dec_layer{0}".format(i)) as scope:
                 if i == 0:  # first, input layer
                     w1 = tf.get_variable('whl', [params.latent_size, params.highway_ls], tf.float32,
                                         initializer=tf.truncated_normal_initializer())
@@ -136,9 +139,9 @@ def vae_lstm(observed, batch_size, d_seq_l, embed, d_inputs, vocab_size):
                     b2 = tf.get_variable('b2hl', [params.decoder_hidden], tf.float32, initializer=tf.ones_initializer())
                     inp_state = tf.matmul(prev_y, w2) + b2
                 # TODO: Kill this bug
-                #else:  # hidden layers
-                    #prev_y = model.highway_network(prev_y, params.highway_ls, scope='dec')
-                    #print(i)
+                else:  # hidden layers
+                    prev_y = model.highway_network(prev_y, params.highway_ls, scope='dec')
+                    print(i)
 
         cell = model.make_rnn_cell([params.decoder_hidden for _ in range(params.decoder_rnn_layers)], base_cell=params.base_cell)
         #print(cell.zero_state(params.batch_size, dtype=tf.float32))
@@ -215,9 +218,12 @@ if __name__ == "__main__":
         # merge summaries
         merged = tf.summary.merge_all()
         with tf.Session() as sess:
+
             sess.run([tf.global_variables_initializer(),
                       tf.local_variables_initializer()])
 
+            if params.debug:
+                sess = tf_debug.LocalCLIDebugWrapperSession(sess)
             summary_writer = tf.summary.FileWriter(params.LOG_DIR, sess.graph)
             summary_writer.add_graph(sess.graph)
             #ptb_data = PTBInput(params.batch_size, train_data)
