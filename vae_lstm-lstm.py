@@ -42,8 +42,8 @@ class Parameters():
     base_cell = tf.contrib.rnn.GRUCell
     temperature = 1.0
     gen_length = 50
-    keep_rate = 0.62
-    dec_keep_rate = 1.0
+    keep_rate = 1.0
+    dec_keep_rate = 0.62
     highway_lc = 2
     highway_ls = 50
     is_training = True
