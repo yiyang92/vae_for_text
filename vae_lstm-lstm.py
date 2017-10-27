@@ -29,32 +29,32 @@ class PTBInput(object):
 
 
 class Parameters():
-    encoder_hidden = 500  # std=191, inputless_dec=350
-    decoder_hidden = 500
+    encoder_hidden = 191  # std=191, inputless_dec=350
+    decoder_hidden = 191
     rnn_layers = 1
     decoder_rnn_layers = 1
     batch_size = 40
     latent_size = 13  # std=13, inputless_dec=111
     embed_size = 353 # std=353, inputless_dec=499
     num_epochs = 40
-    learning_rate = 0.001
-    sent_max_size = 128
+    learning_rate = 0.00001
+    sent_max_size = 300
     base_cell = tf.contrib.rnn.GRUCell
-    temperature = 1.0
-    gen_length = 50
+    temperature = 0.5
+    gen_length = 10
     keep_rate = 1.0
     dec_keep_rate = 0.62
-    highway_lc = 2
-    highway_ls = 50
+    highway_lc = 4
+    highway_ls = embed_size
     is_training = True
     LOG_DIR = './model_logs/'
     datasets = ['GOT', 'PTB']
-    input = datasets[0]
+    input = datasets[1]
     debug = False
 
 params = Parameters()
 
-def online_inference(sess, data_dict, sample, seq, in_state=None, out_state=None, seed='king', length=[1]):
+def online_inference(sess, data_dict, sample, seq, in_state=None, out_state=None, seed='<EOS>', length=[1]):
     """ Generate sequence one character at a time, based on the previous character
     """
     sentence = [seed]
@@ -82,29 +82,30 @@ def q_net(x, seq_len, batch_size=params.batch_size):
         initial = cell.zero_state(batch_size, dtype=tf.float32)
         if params.keep_rate < 1:
             x = tf.nn.dropout(x, params.keep_rate)
-        outputs, final_state = tf.nn.dynamic_rnn(cell, inputs=x, sequence_length=seq_len,
-                                                initial_state=initial, swap_memory=True, dtype=tf.float32)
-        final_output = tf.reshape(outputs[:, -1, :], [batch_size, -1])
-        tf.summary.histogram('encoder_out', final_output)
+        s_l = tf.shape(x)[1]
         # Higway network [S.Sementiuta et.al]
         for i in range(params.highway_lc):
             with tf.variable_scope("hw_layer_enc{0}".format(i)) as scope:
                 if i == 0:  # first, input layer
-                    prev_y = tf.layers.dense(final_output, params.highway_ls, tf.nn.relu)
+                    x = tf.reshape(x, [-1, params.embed_size])
+                    prev_y = tf.layers.dense(x, params.highway_ls, tf.nn.relu)
                 elif i == params.highway_lc - 1:  # last, output layer
-                    lz_mean = tf.layers.dense(inputs=prev_y, units=params.latent_size)
-                    lz_logstd = tf.layers.dense(inputs=prev_y, units=params.latent_size)
+                    encoder_input = tf.layers.dense(prev_y, params.embed_size)
+                    encoder_input = tf.reshape(encoder_input, [params.batch_size, s_l, params.embed_size])
                 else:  # hidden layers
                     print(i)
                     prev_y = model.highway_network(prev_y, params.highway_ls)
 
+        outputs, final_state = tf.nn.dynamic_rnn(cell, inputs=encoder_input, sequence_length=seq_len,
+                                                initial_state=initial, swap_memory=True, dtype=tf.float32)
+        final_output = tf.reshape(outputs[:, -1, :], [batch_size, -1])
+        tf.summary.histogram('encoder_out', final_output)
+        lz_mean = tf.layers.dense(inputs=final_state[0], units=params.latent_size, activation=None)
+        lz_logstd = tf.layers.dense(inputs=final_state[0], units=params.latent_size, activation=None)
         # define latent variable`s Stochastic Tensor
         z = zs.Normal('z', lz_mean, lz_logstd, group_event_ndims=1)
         tf.summary.histogram('latent_space', z)
-        # kl divergence calculation
-        kld = -0.5 * tf.reduce_mean(tf.reduce_sum(1 + lz_logstd - tf.square(lz_mean) - tf.exp(lz_logstd), 1))
-        tf.summary.scalar('kl_divergence', kld)
-        return encoder, kld
+        return z
 
 
 @reuse('decoder')
@@ -121,38 +122,25 @@ def vae_lstm(observed, batch_size, d_seq_l, embed, d_inputs, vocab_size):
         if params.dec_keep_rate < 1 and params.is_training:
             dec_inps = tf.nn.dropout(dec_inps, params.dec_keep_rate)
         max_sl = tf.shape(dec_inps)[1]
-        #z_out = tf.reshape(tf.tile(tf.expand_dims(z, 1), (1,d_seq_length, 1)), [batch_size, -1, params.latent_size])
-        #inputs = tf.concat([dec_inps, z_out], 2)
-        # Higway network [S.Sementiuta et.al]
-        for i in range(params.highway_lc):
-            with tf.variable_scope("hw_dec_layer{0}".format(i)) as scope:
-                if i == 0:  # first, input layer
-                    w1 = tf.get_variable('whl', [params.latent_size, params.highway_ls], tf.float32,
+        z_out = tf.reshape(tf.tile(tf.expand_dims(z, 1), (1, max_sl, 1)), [batch_size, -1, params.latent_size])
+        c_inputs = tf.concat([dec_inps, z_out], 2)
+        w1 = tf.get_variable('whl', [params.latent_size, params.highway_ls], tf.float32,
                                         initializer=tf.truncated_normal_initializer())
-                    b1 = tf.get_variable('bhl', [params.highway_ls], tf.float32, initializer=tf.ones_initializer())
-                    prev_y = tf.nn.relu(tf.matmul(z, w1) + b1)
-                elif i == params.highway_lc - 1:  # last, output layer
-                    print("out layer>")
-                    #inp_state = tf.layers.dense(prev_y, params.decoder_hidden)
-                    w2 = tf.get_variable('w2hl', [params.highway_ls, params.decoder_hidden], tf.float32,
-                                        initializer=tf.truncated_normal_initializer())
-                    b2 = tf.get_variable('b2hl', [params.decoder_hidden], tf.float32, initializer=tf.ones_initializer())
-                    inp_state = tf.matmul(prev_y, w2) + b2
-                # TODO: Kill this bug
-                else:  # hidden layers
-                    prev_y = model.highway_network(prev_y, params.highway_ls, scope='dec')
-                    print(i)
-
+        b1 = tf.get_variable('bhl', [params.highway_ls], tf.float32, initializer=tf.ones_initializer())
+        z_dec = tf.nn.relu(tf.matmul(z, w1) + b1)
+        inp_state = tf.layers.dense(z_dec, params.decoder_hidden)
         cell = model.make_rnn_cell([params.decoder_hidden for _ in range(params.decoder_rnn_layers)], base_cell=params.base_cell)
         #print(cell.zero_state(params.batch_size, dtype=tf.float32))
+        # input cell.zero_state(tf.shape(inputs)[0], dtype=tf.float32)
         initial_state = tf.placeholder_with_default(input=tf.expand_dims(inp_state, 0),
                                           shape=[None, None, params.decoder_hidden])
         ins = tf.reshape(initial_state, [-1, params.decoder_hidden])
-        outputs, final_state = tf.nn.dynamic_rnn(cell, inputs=dec_inps, sequence_length=d_seq_l,
+        outputs, final_state = tf.nn.dynamic_rnn(cell, inputs=c_inputs, sequence_length=d_seq_length,
                                                  initial_state=(ins, ), swap_memory=True, dtype=tf.float32)
         # define decoder network
         x_logits = tf.layers.dense(outputs, units=vocab_size)
-        x = zs.Categorical('x', logits=x_logits, group_event_ndims=1)
+        print("x_logits",x_logits)
+        x = zs.Categorical('x', logits=tf.exp(x_logits)/params.temperature, group_event_ndims=1)
         sample = tf.squeeze(x[:, -1])
         return decoder, x_logits, initial_state, final_state, sample
 
@@ -196,21 +184,26 @@ if __name__ == "__main__":
         seq_length = tf.placeholder(shape=[None], dtype=tf.float32)
         d_seq_length = tf.placeholder(shape=[None], dtype=tf.float32)
 
-        def log_joint(observed):
-            # vae_conv(observed, batch_size, d_seq_l, dec_inps, vocab_size, max_sl)
-            decoder, _, _, _, _ = vae_lstm(observed, params.batch_size, d_seq_length, embedding, d_inputs_ps, vocab_size=vocab_size)
-            print("call")
-            log_pz, log_px_z = decoder.local_log_prob(['z', 'x'])
-            return log_px_z + log_pz
-
-        encoder, kld = q_net(vect_inputs, seq_length)
-        q_z_outs, log_q_z = encoder.query('z', outputs=True, local_log_prob=True)
-        smq = tf.summary.histogram('q(z|x)', q_z_outs)
-        lower_bound = tf.reduce_mean(zs.sgvb(log_joint, observed={'x': inputs}, latent={'z': [q_z_outs, log_q_z]}))
-        prnt = tf.Print(lower_bound, [tf.shape(q_z_outs), tf.shape(log_q_z)])
+        qz = q_net(vect_inputs, seq_length)
+        decoder, dec_logits, initial_state, final_state, sample = vae_lstm({'z': qz},
+                                                                           params.batch_size, d_seq_length,
+                                                                           embedding, d_inputs_ps, vocab_size=vocab_size)
+        # loss
+        log_px_z = decoder.local_log_prob('x')
+        rec_loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(labels=labels, logits=dec_logits))
+        # kl divergence calculation
+        kld = -0.5 * tf.reduce_mean(tf.reduce_sum(1 + qz.distribution.logstd
+                                                  - tf.square(qz.distribution.mean)
+                                                  - tf.exp(qz.distribution.logstd), 1))
+        tf.summary.scalar('kl_divergence', kld)
+        # kld weight annealing
+        anneal = tf.placeholder(tf.int32)
+        annealing = tf.sigmoid((tf.to_float(anneal) - 4500)/100 + 1)
+        # overall loss reconstruction loss - kl_regularization
+        lower_bound = 79 * rec_loss + tf.multiply(tf.to_float(annealing), tf.to_float(kld))
         sm2 = tf.summary.scalar('lower_bound', lower_bound)
         optimizer = tf.train.AdamOptimizer(params.learning_rate)
-        optimize = optimizer.minimize(-lower_bound)
+        optimize = optimizer.minimize(lower_bound)
 
         #sample
         _, logits, init_state, fin_output, smpl = vae_lstm({}, 1, d_seq_length, embedding, d_inputs_ps, vocab_size=vocab_size)
@@ -241,20 +234,22 @@ if __name__ == "__main__":
                     batch = np.flip(np.array([sent + [0] * (pad - len(sent)) for sent in batch]), 1)
                     l_batch = labels_arr[it * params.batch_size:(it + 1) * params.batch_size]
                     l_batch = np.array([(sent + [0] * (pad - len(sent))) for sent in l_batch])
-                    feed = {inputs: batch, d_inputs_ps: l_batch, labels: l_batch, seq_length: length_, d_seq_length: length_}
-                    lb, _, kld_= sess.run([lower_bound, optimize, kld], feed_dict=feed)
+                    feed = {inputs: batch, d_inputs_ps: l_batch, labels: l_batch,
+                            seq_length: length_, d_seq_length: length_, anneal: cur_it}
+                    lb, _, kld_, ann_, r_loss = sess.run([lower_bound, optimize, kld, annealing, rec_loss ], feed_dict=feed)
                     cur_it += 1
                     if cur_it % 100 == 0 and cur_it != 0:
-                        print("Variational lower bound after {} iterations: {} KLD: {}".format(cur_it, lb, kld_))
+                        print("VLB {} iterations: {} KLD: {} Coeff: {} CE: {}".format(cur_it, lb, kld_, ann_, r_loss))
                     if cur_it % 250 == 0  and cur_it != 0:
                         print("Variational lower bound after {} iterations: {} KLD: {}".format(cur_it, lb, kld_))
                         params.is_training = False
                         online_inference(sess, data_dict, sample=smpl, seq=d_inputs_ps, in_state=init_state,
                                          out_state=fin_output, length=d_seq_length)
                     if cur_it % 400 == 0 and cur_it!=0:
-                        saver = tf.train.Saver()
-                        summary, _ = sess.run([merged, prnt], feed_dict=feed)
-                        summary_writer.add_summary(summary)
+                       pass
+                       # saver = tf.train.Saver()
+                       # summary = sess.run([merged], feed_dict=feed)
+                       # summary_writer.add_summary(summary)
                         # saver.save(sess, os.path.join(params.LOG_DIR, "lstmlstm_model.ckpt"), cur_it)
 
 
