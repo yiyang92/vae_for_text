@@ -7,7 +7,7 @@ import tqdm
 
 import utils.data as data_
 import utils.model as model
-
+# TODO : Make multiple layers work!
 params = {
     'batch_size': 20,
     'num_epochs': 20,
@@ -143,5 +143,5 @@ if __name__ == "__main__":
                         params['mode_train'] = False
                         feed[keep_rate] = 1.0
                         _ = sess.run(prnt, feed_dict=feed)
-                        online_inference(sess, data_dict, sample=sample, seq=inputs, in_state=initial_state, out_state=final_state)
+                        #online_inference(sess, data_dict, sample=sample, seq=inputs, in_state=initial_state, out_state=final_state)
                         print("loss after {it} operations: {loss_}, accuracy: {acc}".format(**locals()))

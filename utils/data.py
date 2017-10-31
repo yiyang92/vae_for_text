@@ -1,4 +1,3 @@
-from gensim.models import KeyedVectors, Word2Vec
 
 import os
 import tqdm
@@ -83,17 +82,25 @@ def ptb_read(data_path):
 
 
 # use wor2vec for learning word-embeddings
-def load_word_embeddings(corpus_path, embed_fn, model_path="./trained_embeddings"):
+def load_word_embeddings(corpus_path, embed_fn, embed_size, w2vec_it=5, tokenize=True, sentences=None, model_path="./trained_embeddings"):
+    from gensim.models import KeyedVectors, Word2Vec
+    embed_fn += '.embed'
     print(os.path.join(model_path, embed_fn))
+    if tokenize:
+        assert (sentences is None), 'Tokenize option cannot be used wth provided sentences'
+        sentences, _ = tokenize_text_and_make_labels(corpus_path)
+        sentences = [['<BOS>'] + dt + ['<EOS>'] for dt in sentences]
+    elif tokenize:
+        assert (sentences is None), "Must provide sentences"
     if os.path.exists(os.path.join(model_path, embed_fn)):
         print("Loading existing embeddings file")
-        return KeyedVectors.load_word2vec_format(os.path.join(model_path, embed_fn))
-    sentences = tokenize_text_and_make_labels(corpus_path)
+        return KeyedVectors.load_word2vec_format(os.path.join(model_path, embed_fn)), sentences
     # Print corpus info, start w2vec training
     print("Corpus contains {0:,} tokens".format(sum(len(sent) for sent in sentences)))
     # :TODO integrate hardcoded parameters into class
     # sample parameter-downsampling for frequent words
-    w2vec = Word2Vec(sg=1, workers=multiprocessing.cpu_count(), size=128, min_count=0, window=7)
+    print(sentences[0:5])
+    w2vec = Word2Vec(sg=0, workers=multiprocessing.cpu_count(), size=embed_size, min_count=0, window=5, iter=w2vec_it)
     w2vec.build_vocab(sentences=sentences)
     print("Training w2vec")
     w2vec.train(sentences=sentences, total_examples=w2vec.corpus_count, epochs=w2vec.iter)
@@ -101,25 +108,7 @@ def load_word_embeddings(corpus_path, embed_fn, model_path="./trained_embeddings
     if not os.path.exists(model_path):
         os.makedirs(model_path)
     w2vec.wv.save_word2vec_format(os.path.join(model_path, embed_fn))
-    return KeyedVectors.load_word2vec_format(os.path.join(model_path, embed_fn))
-
-
-def make_embedding_matrix(w2vec, data, embed_file="./trained_embeddings/embed_got.pickle", load=True, embed_size=128):
-    if os.path.exists(embed_file) and load:
-        print("Loading embedding file")
-        with open(embed_file, 'rb') as rf:
-            return pickle.load(file=rf)
-    embed_matrix = np.zeros([data.shape[0], data.shape[1], embed_size])
-    print("Preparing embedding matrix of shape: ", embed_matrix.shape)
-    for i in tqdm.trange(data.shape[0]):
-        for j in range(len(data[i])):
-            if data[i][j] != '0' and data[i][j] in w2vec.vocab:
-                embed_matrix[i][j] = w2vec.word_vec(str(data[i][j]))
-    print(embed_matrix[1][1])
-    with open(embed_file, 'wb') as wf:
-        pickle.dump(embed_matrix, file=wf)
-    return embed_matrix
-
+    return KeyedVectors.load_word2vec_format(os.path.join(model_path, embed_fn)), sentences
 
 # TODO: implement batch generator
 class BatchGenerator():
