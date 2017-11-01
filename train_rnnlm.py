@@ -30,6 +30,9 @@ def online_inference(sess, data_dict, sample, seq, in_state=None, out_state=None
     sentence = [seed]
     state = None
     for _ in range(params['gen_length']):
+        # generate until <EOS> tag
+        if "<EOS>" in sentence:
+            break
         input_sent_vect = [data_dict.word2idx[word] for word in sentence]
         feed = {seq: np.array(input_sent_vect).reshape([1, len(input_sent_vect)]), length: [len(input_sent_vect)],
                 keep_rate: 1.0}

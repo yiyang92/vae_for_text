@@ -78,12 +78,15 @@ def rnn_placeholders(state):
         return tuple(structure)
 
 
-def online_inference(sess, data_dict, sample, seq, in_state=None, out_state=None, seed='<BOS>', length=[1]):
+def online_inference(sess, data_dict, sample, seq, in_state=None, out_state=None, seed='<BOS>', length=None):
     """ Generate sequence one character at a time, based on the previous character
     """
     sentence = [seed]
     state = None
     for _ in range(params.gen_length):
+        # generate until <EOS> tag
+        if "<EOS>" in sentence:
+            break
         input_sent_vect = [data_dict.word2idx[word] for word in sentence]
         feed = {seq: np.array(input_sent_vect).reshape([1, len(input_sent_vect)]), length: [len(input_sent_vect)]}
         # for the first decoder step, the state is None
@@ -91,7 +94,7 @@ def online_inference(sess, data_dict, sample, seq, in_state=None, out_state=None
              feed.update({in_state: state})
         index, state = sess.run([sample, out_state], feed)
         sentence += [data_dict.idx2word[int(index)]]
-    print([word for word in sentence if word not in ['<EOS>', '<BOS>']])
+    print([word for word in sentence if word not in ['<BOS>']])
 
 
 def q_net(x, seq_len, batch_size=params.batch_size):
@@ -120,9 +123,6 @@ def q_net(x, seq_len, batch_size=params.batch_size):
 
         outputs, final_state = tf.nn.dynamic_rnn(cell, inputs=encoder_input, sequence_length=seq_len,
                                                 initial_state=initial, swap_memory=True, dtype=tf.float32)
-        #final_output = tf.reshape(outputs[:, -1, :], [batch_size, -1])
-        #tf.summary.histogram('encoder_out', final_output)
-        #print(final_state)
         final_state = tf.concat(final_state[0], 1)
         lz_mean = tf.layers.dense(inputs=final_state, units=params.latent_size, activation=None)
         lz_logstd = tf.layers.dense(inputs=final_state, units=params.latent_size, activation=None)
@@ -163,7 +163,7 @@ def vae_lstm(observed, batch_size, d_seq_l, embed, d_inputs, vocab_size, dropout
         #initial_state = rnn_placeholders((tf.contrib.rnn.LSTMStateTuple(inp_c, inp_h), ))
         for tensor in flatten(initial_state):
             tf.add_to_collection('rnn_decoder_state_input', tensor)
-        outputs, final_state = tf.nn.dynamic_rnn(cell, inputs=c_inputs,
+        outputs, final_state = tf.nn.dynamic_rnn(cell, inputs=c_inputs, sequence_length=d_seq_length,
                                                   initial_state=initial_state, swap_memory=True, dtype=tf.float32)
         for tensor in flatten(final_state):
             tf.add_to_collection('rnn_decoder_state_output', tensor)
@@ -222,7 +222,7 @@ if __name__ == "__main__":
     with tf.Graph().as_default() as graph:
         inputs = tf.placeholder(shape=[None, None], dtype=tf.int32)
         d_inputs_ps = tf.placeholder(dtype=tf.int32, shape=[None, None])
-        labels = tf.placeholder(shape=[None, None], dtype=tf.int64)
+        labels = tf.placeholder(shape=[None, None], dtype=tf.int32)
         with tf.device("/cpu:0"):
             if not params.pre_trained_embed:
                 embedding = tf.get_variable(
@@ -234,15 +234,25 @@ if __name__ == "__main__":
                 vect_inputs = tf.nn.embedding_lookup(embedding, inputs)
         # inputs = tf.unstack(inputs, num=num_steps, axis=1)
         vocab_size = data_dict.vocab_size
-        seq_length = tf.placeholder(shape=[None], dtype=tf.float32)
+        seq_length = tf.placeholder_with_default([0.0], shape=[None])
         d_seq_length = tf.placeholder(shape=[None], dtype=tf.float32)
         qz = q_net(vect_inputs, seq_length)
         decoder, dec_logits, initial_state, final_state, _ = vae_lstm({'z': qz},
                                                                            params.batch_size, d_seq_length,
                                                                            embedding, d_inputs_ps, vocab_size=vocab_size)
-        # loss
-        #log_px_z = decoder.local_log_prob('x')
-        rec_loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(labels=labels, logits=dec_logits))
+        # loss, masking <PAD>
+        current_len = tf.placeholder_with_default(params.sent_max_size, shape=())
+        # tf.sequence_mask, tf.contrib.seq2seq.sequence_loss
+        loss_pad_mask = tf.sequence_mask(d_seq_length, current_len, dtype=tf.float32)
+        cross_entr = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=dec_logits, labels=labels)
+        mask_labels = tf.sequence_mask(d_seq_length, current_len, dtype=tf.float32)
+        masked_losses = mask_labels * cross_entr
+        # reshape again
+        masked_losses = tf.reshape(masked_losses, tf.shape(labels))
+        mean_loss_by_example = tf.reduce_sum(masked_losses, reduction_indices=1) / seq_length
+        rec_loss = tf.reduce_mean(mean_loss_by_example)
+
+        #rec_loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(labels=labels, logits=dec_logits))
         # kl divergence calculation
         kld = -0.5 * tf.reduce_mean(tf.reduce_sum(1 + qz.distribution.logstd
                                                   - tf.square(qz.distribution.mean)
@@ -293,7 +303,7 @@ if __name__ == "__main__":
                     l_batch = np.array([(sent + [0] * (pad - len(sent))) for sent in l_batch])
                     # encoder feed=[....<EOS>], decoder feed=[<BOS>....], labels=[.....<EOS>]
                     feed = {inputs: l_batch, d_inputs_ps: batch, labels: l_batch,
-                            seq_length: length_, d_seq_length: length_, anneal: cur_it}
+                            seq_length: length_, d_seq_length: length_, anneal: cur_it, current_len: pad}
                     lb, _, kld_, ann_, r_loss = sess.run([lower_bound, optimize, kld, annealing, rec_loss ], feed_dict=feed)
                     cur_it += 1
                     if cur_it % 100 == 0 and cur_it != 0:
