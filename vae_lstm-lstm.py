@@ -42,11 +42,11 @@ class Parameters():
     base_cell = tf.contrib.rnn.LSTMCell
     #base_cell = tf.contrib.rnn.GRUCell
     temperature = 0.5
-    gen_length = 10
+    gen_length = 20
     keep_rate = 1.0
     dec_keep_rate = 0.62
     highway_lc = 2
-    highway_ls = 825
+    highway_ls = 353
     datasets = ['GOT', 'PTB']
     input = datasets[1]
     debug = False
@@ -120,9 +120,9 @@ def q_net(x, seq_len, batch_size=params.batch_size):
 
         outputs, final_state = tf.nn.dynamic_rnn(cell, inputs=encoder_input, sequence_length=seq_len,
                                                 initial_state=initial, swap_memory=True, dtype=tf.float32)
-        final_output = tf.reshape(outputs[:, -1, :], [batch_size, -1])
-        tf.summary.histogram('encoder_out', final_output)
-        print(final_state)
+        #final_output = tf.reshape(outputs[:, -1, :], [batch_size, -1])
+        #tf.summary.histogram('encoder_out', final_output)
+        #print(final_state)
         final_state = tf.concat(final_state[0], 1)
         lz_mean = tf.layers.dense(inputs=final_state, units=params.latent_size, activation=None)
         lz_logstd = tf.layers.dense(inputs=final_state, units=params.latent_size, activation=None)
@@ -138,7 +138,7 @@ def vae_lstm(observed, batch_size, d_seq_l, embed, d_inputs, vocab_size, dropout
         # prepare input
         z_mean = tf.zeros([batch_size, params.latent_size])
         z_logstd = tf.zeros([batch_size, params.latent_size])
-        z = zs.Normal('z', mean=z_mean, logstd=z_logstd, group_event_ndims=1)
+        z = zs.Normal('z', mean=z_mean, logstd=z_logstd, group_event_ndims=0)
         tf.summary.histogram('z|x', z)
         # z = [bath_size, l_s] -> [batch_size, seq_len, l_s]
         with tf.device("/cpu:0"):
@@ -170,8 +170,9 @@ def vae_lstm(observed, batch_size, d_seq_l, embed, d_inputs, vocab_size, dropout
         # define decoder network
         x_logits = tf.layers.dense(outputs, units=vocab_size, activation=None)
         print("x_logits", x_logits)
-        x = zs.Categorical('x', logits=x_logits/params.temperature, group_event_ndims=0)
-        sample = tf.squeeze(x[:, -1])
+        #x = zs.Categorical('x', logits=x_logits/params.temperature, group_event_ndims=0)
+        sample = tf.multinomial(x_logits[:, -1] / params.temperature, 1)[:, 0]
+        #sample = tf.squeeze(x[:, -1])
         return decoder, x_logits, initial_state, final_state, sample
 
 # TODO: print values of input and decoder output
@@ -236,11 +237,11 @@ if __name__ == "__main__":
         seq_length = tf.placeholder(shape=[None], dtype=tf.float32)
         d_seq_length = tf.placeholder(shape=[None], dtype=tf.float32)
         qz = q_net(vect_inputs, seq_length)
-        decoder, dec_logits, initial_state, final_state, sample = vae_lstm({'z': qz, 'x': d_inputs_ps},
+        decoder, dec_logits, initial_state, final_state, _ = vae_lstm({'z': qz},
                                                                            params.batch_size, d_seq_length,
                                                                            embedding, d_inputs_ps, vocab_size=vocab_size)
         # loss
-        log_px_z = decoder.local_log_prob('x')
+        #log_px_z = decoder.local_log_prob('x')
         rec_loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(labels=labels, logits=dec_logits))
         # kl divergence calculation
         kld = -0.5 * tf.reduce_mean(tf.reduce_sum(1 + qz.distribution.logstd
@@ -249,7 +250,8 @@ if __name__ == "__main__":
         tf.summary.scalar('kl_divergence', kld)
         # kld weight annealing
         anneal = tf.placeholder(tf.int32)
-        annealing = tf.sigmoid((tf.to_float(anneal) - 2500)/100 + 1)
+        #annealing = tf.sigmoid((tf.to_float(anneal) - 2500)/100 + 1)
+        annealing = (tf.tanh((tf.to_float(anneal) - 3500)/1000) + 1)/2
         # overall loss reconstruction loss - kl_regularization
         lower_bound = 100 * rec_loss + tf.multiply(tf.to_float(annealing), tf.to_float(kld))
         #lower_bound = rec_loss
