@@ -24,7 +24,7 @@ params = {
 }
 
 
-def online_inference(sess, data_dict, sample, seq, in_state=None, out_state=None, seed='king'):
+def online_inference(sess, data_dict, sample, seq, in_state=None, out_state=None, seed='<BOS>'):
     """ Generate sequence one character at a time, based on the previous character
     """
     sentence = [seed]
@@ -100,8 +100,7 @@ if __name__ == "__main__":
         outputs, final_state = tf.nn.dynamic_rnn(cell, inputs=vect_inputs, sequence_length=length,
                                                 initial_state=(ins, )*params['num_layers'], swap_memory=False,
                                                  dtype=tf.float32)
-        fc_layer = tf.layers.dense(inputs=outputs, units=data_dict.vocab_size)
-
+        fc_layer = tf.layers.dense(inputs=outputs, units=data_dict.vocab_size, activation=None)
         prnt = tf.Print(fc_layer, [tf.shape(final_state), tf.shape(zs)])
         # define optimization with lr decay, lr decay can be use with SGD oprtimizer
         global_step = tf.Variable(0, trainable=False)
@@ -118,7 +117,8 @@ if __name__ == "__main__":
         accuracy = tf.reduce_mean(corr_predictions)
         # sample from multinomial distribution
         # take [batch, seq_length, vocab_size] as input
-        sample = tf.multinomial(tf.exp(fc_layer[:, -1] / params['temperature']), 1)[:, 0]
+        sample = tf.multinomial(tf.exp(fc_layer[:, -1] / params['temperature']), 1)[:, 0][:]
+        print(fc_layer)
         prnt2 = tf.Print(sample, [tf.shape(sample), fc_layer[:, -1]])
 
         num_iters = len(data) // params['batch_size']
@@ -146,5 +146,5 @@ if __name__ == "__main__":
                         params['mode_train'] = False
                         feed[keep_rate] = 1.0
                         _ = sess.run(prnt, feed_dict=feed)
-                        #online_inference(sess, data_dict, sample=sample, seq=inputs, in_state=initial_state, out_state=final_state)
+                        online_inference(sess, data_dict, sample=sample, seq=inputs, in_state=initial_state, out_state=final_state)
                         print("loss after {it} operations: {loss_}, accuracy: {acc}".format(**locals()))

@@ -33,25 +33,25 @@ class Parameters():
     decoder_hidden = 191
     rnn_layers = 1
     decoder_rnn_layers = 1
-    batch_size = 40
+    batch_size = 50
     latent_size = 13  # std=13, inputless_dec=111
     embed_size = 353 # std=353, inputless_dec=499
-    num_epochs = 50
-    learning_rate = 0.0001
+    num_epochs = 150
+    learning_rate = 0.001
     sent_max_size = 300
     base_cell = tf.contrib.rnn.LSTMCell
     #base_cell = tf.contrib.rnn.GRUCell
-    temperature = 0.5
+    temperature = 0.7
     gen_length = 20
     keep_rate = 1.0
     dec_keep_rate = 0.62
     highway_lc = 2
-    highway_ls = 353
+    highway_ls = 600
     datasets = ['GOT', 'PTB']
     input = datasets[1]
     debug = False
     # use pretrained w2vec embeddings
-    pre_trained_embed = True
+    pre_trained_embed = False
     fine_tune_embed = True
     # technical parameters
     is_training = True
@@ -157,21 +157,24 @@ def vae_lstm(observed, batch_size, d_seq_l, embed, d_inputs, vocab_size, dropout
         inp_h = tf.layers.dense(z_dec, params.decoder_hidden)
         inp_c = tf.layers.dense(z_dec, params.decoder_hidden)
         cell = model.make_rnn_cell([params.decoder_hidden for _ in range(params.decoder_rnn_layers)], base_cell=params.base_cell)
-        initial_state = rnn_placeholders(cell.zero_state(batch_size, tf.float32))
+        #initial_state = rnn_placeholders(cell.zero_state(batch_size, tf.float32))
         #print(cell.zero_state(batch_size, tf.float32))
         #print(rnn_placeholders((tf.contrib.rnn.LSTMStateTuple(inp_c, inp_h), )))
-        #initial_state = rnn_placeholders((tf.contrib.rnn.LSTMStateTuple(inp_c, inp_h), ))
+        initial_state = rnn_placeholders((tf.contrib.rnn.LSTMStateTuple(inp_c, inp_h), ))
         for tensor in flatten(initial_state):
             tf.add_to_collection('rnn_decoder_state_input', tensor)
-        outputs, final_state = tf.nn.dynamic_rnn(cell, inputs=c_inputs, sequence_length=d_seq_length,
+        outputs, final_state = tf.nn.dynamic_rnn(cell, inputs=c_inputs,sequence_length=d_seq_l,
                                                   initial_state=initial_state, swap_memory=True, dtype=tf.float32)
         for tensor in flatten(final_state):
             tf.add_to_collection('rnn_decoder_state_output', tensor)
         # define decoder network
-        x_logits = tf.layers.dense(outputs, units=vocab_size, activation=None)
+        outputs_r = tf.reshape(outputs, [-1, params.decoder_hidden])
+        x_logits = tf.layers.dense(outputs_r, units=vocab_size, activation=None)
         print("x_logits", x_logits)
         #x = zs.Categorical('x', logits=x_logits/params.temperature, group_event_ndims=0)
-        sample = tf.multinomial(x_logits[:, -1] / params.temperature, 1)[:, 0]
+        # take unnormalized log-prob of the last word in sequence and sample from multinomial distibution
+        sample = tf.multinomial(tf.reshape(x_logits, [tf.shape(outputs)[0], tf.shape(outputs)[1], vocab_size])[:, -1]
+                                /params.temperature, 1)[:, 0][:]
         #sample = tf.squeeze(x[:, -1])
         return decoder, x_logits, initial_state, final_state, sample
 
@@ -237,20 +240,21 @@ if __name__ == "__main__":
         seq_length = tf.placeholder_with_default([0.0], shape=[None])
         d_seq_length = tf.placeholder(shape=[None], dtype=tf.float32)
         qz = q_net(vect_inputs, seq_length)
-        decoder, dec_logits, initial_state, final_state, _ = vae_lstm({'z': qz},
+        decoder, dec_logits, initial_state, final_state, _,  = vae_lstm({'z': qz},
                                                                            params.batch_size, d_seq_length,
                                                                            embedding, d_inputs_ps, vocab_size=vocab_size)
         # loss, masking <PAD>
         current_len = tf.placeholder_with_default(params.sent_max_size, shape=())
         # tf.sequence_mask, tf.contrib.seq2seq.sequence_loss
-        loss_pad_mask = tf.sequence_mask(d_seq_length, current_len, dtype=tf.float32)
-        cross_entr = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=dec_logits, labels=labels)
-        mask_labels = tf.sequence_mask(d_seq_length, current_len, dtype=tf.float32)
+        labels_flat = tf.reshape(labels, [-1])
+        cross_entr = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=dec_logits, labels=labels_flat)
+        mask_labels = tf.sign(tf.to_float(labels_flat))
         masked_losses = mask_labels * cross_entr
         # reshape again
         masked_losses = tf.reshape(masked_losses, tf.shape(labels))
-        mean_loss_by_example = tf.reduce_sum(masked_losses, reduction_indices=1) / seq_length
+        mean_loss_by_example = tf.reduce_sum(masked_losses, reduction_indices=1) / d_seq_length
         rec_loss = tf.reduce_mean(mean_loss_by_example)
+        perplexity = tf.exp(rec_loss)
 
         #rec_loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(labels=labels, logits=dec_logits))
         # kl divergence calculation
@@ -263,7 +267,7 @@ if __name__ == "__main__":
         #annealing = tf.sigmoid((tf.to_float(anneal) - 2500)/100 + 1)
         annealing = (tf.tanh((tf.to_float(anneal) - 3500)/1000) + 1)/2
         # overall loss reconstruction loss - kl_regularization
-        lower_bound = 100 * rec_loss + tf.multiply(tf.to_float(annealing), tf.to_float(kld))
+        lower_bound = tf.reduce_mean(d_seq_length)*rec_loss + tf.multiply(tf.to_float(annealing), tf.to_float(kld))
         #lower_bound = rec_loss
         sm2 = [tf.summary.scalar('lower_bound', lower_bound),
                tf.summary.scalar('kld_coeff', annealing)]
@@ -272,9 +276,7 @@ if __name__ == "__main__":
         clipped_grad, _ = tf.clip_by_global_norm(gradients, 1)
         optimize = opt.apply_gradients(zip(clipped_grad, tf.trainable_variables()))
         #sample
-        z_sample = tf.placeholder_with_default(tf.random_normal([1, params.latent_size]), shape=[1, params.latent_size])
-        _, logits, init_state, fin_output, smpl = vae_lstm({}, 1, d_seq_length, embedding, d_inputs_ps, vocab_size=vocab_size, dropout_off=True)
-        # sample = tf.multinomial(tf.exp(logits[:, -1] / params.temperature), 1)[:, 0]
+        _, logits, init_state, fin_output, smpl, = vae_lstm({}, 1, d_seq_length, embedding, d_inputs_ps, vocab_size=vocab_size, dropout_off=True)
         # merge summaries
         merged = tf.summary.merge_all()
         with tf.Session() as sess:
@@ -304,10 +306,13 @@ if __name__ == "__main__":
                     # encoder feed=[....<EOS>], decoder feed=[<BOS>....], labels=[.....<EOS>]
                     feed = {inputs: l_batch, d_inputs_ps: batch, labels: l_batch,
                             seq_length: length_, d_seq_length: length_, anneal: cur_it, current_len: pad}
-                    lb, _, kld_, ann_, r_loss = sess.run([lower_bound, optimize, kld, annealing, rec_loss ], feed_dict=feed)
+                    lb, _, kld_, ann_, r_loss, perplexity_ = sess.run([lower_bound, optimize,
+                                                                       kld, annealing, rec_loss, perplexity],
+                                                                      feed_dict=feed)
                     cur_it += 1
                     if cur_it % 100 == 0 and cur_it != 0:
-                        print("VLB {} iterations: {} KLD: {} Coeff: {} CE: {}".format(cur_it, lb, kld_, ann_, r_loss))
+                        print("VLB after {} iterations: {} KLD: {} Annealing Coeff: {} CE: {}".format(cur_it, lb, kld_, ann_, r_loss))
+                        print("Perplexity: {}".format(perplexity_))
                     if cur_it % 250 == 0  and cur_it != 0:
                         print("Variational lower bound after {} iterations: {} KLD: {}".format(cur_it, lb, kld_))
                         params.is_training = False
