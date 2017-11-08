@@ -6,7 +6,7 @@ from tensorflow.contrib import layers
 import zhusuan as zs
 from zhusuan import reuse
 import utils.data as data_
-
+import beam_search as bs
 
 import utils.model as model
 from utils.ptb import reader
@@ -29,33 +29,43 @@ class PTBInput(object):
 
 
 class Parameters():
-    encoder_hidden = 191  # std=191, inputless_dec=350
-    decoder_hidden = 191
-    rnn_layers = 1
-    decoder_rnn_layers = 1
-    batch_size = 50
+    # general parameters
     latent_size = 13  # std=13, inputless_dec=111
-    embed_size = 353 # std=353, inputless_dec=499
     num_epochs = 150
     learning_rate = 0.001
-    sent_max_size = 300
-    base_cell = tf.contrib.rnn.LSTMCell
-    #base_cell = tf.contrib.rnn.GRUCell
-    temperature = 0.7
+    batch_size = 50
+    # for decoding
+    temperature = 1.0
     gen_length = 20
+    # beam search
+    beam_search = True
+    beam_size = 5
+    # encoder
+    rnn_layers = 1
+    encoder_hidden = 191  # std=191, inputless_dec=350
     keep_rate = 1.0
-    dec_keep_rate = 0.62
     highway_lc = 2
     highway_ls = 600
+    # decoder
+    decoder_hidden = 191
+    decoder_rnn_layers = 1
+    dec_keep_rate = 0.75
+    # data
     datasets = ['GOT', 'PTB']
+    embed_size = 353 # std=353, inputless_dec=499
+    sent_max_size = 300
     input = datasets[1]
     debug = False
     # use pretrained w2vec embeddings
-    pre_trained_embed = False
+    pre_trained_embed = True
     fine_tune_embed = True
     # technical parameters
     is_training = True
     LOG_DIR = './model_logs/'
+    visualise = False
+    # gru base cell partially implemented
+    base_cell = tf.contrib.rnn.LSTMCell
+    #base_cell = tf.contrib.rnn.GRUCell
 
 params = Parameters()
 
@@ -173,10 +183,17 @@ def vae_lstm(observed, batch_size, d_seq_l, embed, d_inputs, vocab_size, dropout
         print("x_logits", x_logits)
         #x = zs.Categorical('x', logits=x_logits/params.temperature, group_event_ndims=0)
         # take unnormalized log-prob of the last word in sequence and sample from multinomial distibution
-        sample = tf.multinomial(tf.reshape(x_logits, [tf.shape(outputs)[0], tf.shape(outputs)[1], vocab_size])[:, -1]
-                                /params.temperature, 1)[:, 0][:]
+        if params.beam_search:
+            logits_ = tf.reshape(x_logits, [tf.shape(outputs)[0], tf.shape(outputs)[1], vocab_size])[:, -1]
+            top_k = tf.nn.top_k(logits_, params.beam_size)
+            sample = top_k.indices
+            norm_log_prob = tf.log(tf.nn.softmax(top_k.values))
+            #sample = tf.multinomial(logits_, params.beam_size)
+            #norm_log_prob = tf.log(tf.nn.softmax(logits_))
+        sample_gr = tf.multinomial(tf.reshape(x_logits, [tf.shape(outputs)[0], tf.shape(outputs)[1], vocab_size])[:, -1]
+                                    /params.temperature, 1)[:, 0][:]
         #sample = tf.squeeze(x[:, -1])
-        return decoder, x_logits, initial_state, final_state, sample
+        return decoder, x_logits, initial_state, final_state, sample_gr, sample, norm_log_prob
 
 # TODO: print values of input and decoder output
 if __name__ == "__main__":
@@ -195,7 +212,6 @@ if __name__ == "__main__":
         labels_arr = [data_dict.seq2dx(dt[:-1]) for dt in data_raw if len(dt) < params.sent_max_size]
         print("----Corpus_Information--- \n Raw data size: {} sentences \n Vocabulary size {}"
               "\n Limited data size {} sentences \n".format(len(data_raw), data_dict.vocab_size, len(data)))
-        print("w2vec vocab size: {}".format(len(w2_vec.vocab.items())))
         if params.pre_trained_embed:
             embed_arr = np.zeros([data_dict.vocab_size, params.embed_size])
             for i in range(embed_arr.shape[0]):
@@ -240,7 +256,7 @@ if __name__ == "__main__":
         seq_length = tf.placeholder_with_default([0.0], shape=[None])
         d_seq_length = tf.placeholder(shape=[None], dtype=tf.float32)
         qz = q_net(vect_inputs, seq_length)
-        decoder, dec_logits, initial_state, final_state, _,  = vae_lstm({'z': qz},
+        decoder, dec_logits, initial_state, final_state, _, _, _,= vae_lstm({'z': qz},
                                                                            params.batch_size, d_seq_length,
                                                                            embedding, d_inputs_ps, vocab_size=vocab_size)
         # loss, masking <PAD>
@@ -276,7 +292,7 @@ if __name__ == "__main__":
         clipped_grad, _ = tf.clip_by_global_norm(gradients, 1)
         optimize = opt.apply_gradients(zip(clipped_grad, tf.trainable_variables()))
         #sample
-        _, logits, init_state, fin_output, smpl, = vae_lstm({}, 1, d_seq_length, embedding, d_inputs_ps, vocab_size=vocab_size, dropout_off=True)
+        _, logits, init_state, fin_output, smpl, sample,norm_log,= vae_lstm({}, 1, d_seq_length, embedding, d_inputs_ps, vocab_size=vocab_size, dropout_off=True)
         # merge summaries
         merged = tf.summary.merge_all()
         with tf.Session() as sess:
@@ -291,6 +307,7 @@ if __name__ == "__main__":
             #ptb_data = PTBInput(params.batch_size, train_data)
             num_iters = len(data) // params.batch_size
             cur_it = 0
+            iters, kld_arr, coeff = [], [], []
             for e in range(params.num_epochs):
                 for it in range(num_iters):
                     params.is_training = True
@@ -310,18 +327,43 @@ if __name__ == "__main__":
                                                                        kld, annealing, rec_loss, perplexity],
                                                                       feed_dict=feed)
                     cur_it += 1
+                    iters.append(cur_it)
+                    kld_arr.append(kld_)
+                    coeff.append(ann_)
                     if cur_it % 100 == 0 and cur_it != 0:
                         print("VLB after {} iterations: {} KLD: {} Annealing Coeff: {} CE: {}".format(cur_it, lb, kld_, ann_, r_loss))
                         print("Perplexity: {}".format(perplexity_))
-                    if cur_it % 250 == 0  and cur_it != 0:
-                        print("Variational lower bound after {} iterations: {} KLD: {}".format(cur_it, lb, kld_))
-                        params.is_training = False
-                        online_inference(sess, data_dict, sample=smpl, seq=d_inputs_ps, in_state=init_state,
+                    if cur_it % 150 == 0:
+                        if not params.beam_search:
+                            params.is_training = False
+                            online_inference(sess, data_dict, sample=smpl, seq=d_inputs_ps, in_state=init_state,
                                          out_state=fin_output, length=d_seq_length)
-                    if cur_it % 200 == 0 and cur_it!=0:
+                        else:
+                            gen_sentence = bs.beam_search(sess, d_inputs_ps, data_dict, norm_log, sample, init_state, fin_output,
+                                            params.gen_length, length=d_seq_length, seed='<BOS>')
+                            print(gen_sentence)
+                    if cur_it % 400 == 0 and cur_it!=0:
                        # saver = tf.train.Saver()
                         summary = sess.run(merged, feed_dict=feed)
                         summary_writer.add_summary(summary)
                         # saver.save(sess, os.path.join(params.LOG_DIR, "lstmlstm_model.ckpt"), cur_it)
+                    if params.visualise:
+                        if cur_it % 30000 == 0 and cur_it!=0:
+                           import matplotlib.pyplot as plt
+                           with open("./run_kld" + str(params.dec_keep_rate), 'w') as wf:
+                               _ = [wf.write(str(s) + ' ')for s in iters]
+                               wf.write('\n')
+                               _ = [wf.write(str(s) + ' ')for s in kld_arr]
+                               wf.write('\n')
+                               _ = [wf.write(str(s) + ' ') for s in coeff]
+                           plt.plot(iters, kld_arr, label='KLD')
+                           plt.xlabel('Iterations')
+                           plt.legend(bbox_to_anchor=(1.05, 1), loc=1, borderaxespad=0.)
+                           plt.show()
+                           plt.plot(iters, coeff, 'r--', label='annealing')
+                           plt.legend(bbox_to_anchor=(1.05, 1), loc=1, borderaxespad=0.)
+                           plt.show()
+
+
 
 
