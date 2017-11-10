@@ -11,17 +11,17 @@ python vae_lstm-lstm.py
 ```
  ### Parameters
  Parameters can be set directly in Parameters class in vae_lstm-lst.py file.
- (later will change it to command line entries). You can choose to train on PTB dataset
+ (or specify through command line parameters). You can choose to train on PTB dataset
   or on Game of Thrones dataset. Parameter debug can be set to true for calling Tensorflow
    debugger.
+
+### Specific requirements
+- zhusuan - probabilistic framework
 
 ### Other files
 - train_rnnlm.py - RNN Word-level language model. Can be trained on PTB or
  Game of Thrones dataset.
-- dilated_conv_mnist_test.py - some playground for learning dilated CNN 
-parameters tuning. Will be deleted after vae-lstm-cnn code initial release
- 
- 
+
  
  
  
