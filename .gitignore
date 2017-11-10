@@ -24,4 +24,3 @@ trained_embeddings/
 utils/__pycache__/
 utils/ptb/__pycache__/
 vae_lstm-dil_cnn.py
-dilated_conv_mnist_test.py
