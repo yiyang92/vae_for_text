@@ -188,9 +188,6 @@ def vae_lstm(observed, batch_size, d_seq_l, embed, d_inputs, vocab_size, dropout
         inp_h = tf.layers.dense(z_dec, params.decoder_hidden)
         inp_c = tf.layers.dense(z_dec, params.decoder_hidden)
         cell = model.make_rnn_cell([params.decoder_hidden for _ in range(params.decoder_rnn_layers)], base_cell=params.base_cell)
-        #initial_state = rnn_placeholders(cell.zero_state(batch_size, tf.float32))
-        #print(cell.zero_state(batch_size, tf.float32))
-        #print(rnn_placeholders((tf.contrib.rnn.LSTMStateTuple(inp_c, inp_h), )))
         initial_state = rnn_placeholders((tf.contrib.rnn.LSTMStateTuple(inp_c, inp_h), ))
         for tensor in flatten(initial_state):
             tf.add_to_collection('rnn_decoder_state_input', tensor)
@@ -202,18 +199,14 @@ def vae_lstm(observed, batch_size, d_seq_l, embed, d_inputs, vocab_size, dropout
         outputs_r = tf.reshape(outputs, [-1, params.decoder_hidden])
         x_logits = tf.layers.dense(outputs_r, units=vocab_size, activation=None)
         print("x_logits", x_logits)
-        #x = zs.Categorical('x', logits=x_logits/params.temperature, group_event_ndims=0)
         # take unnormalized log-prob of the last word in sequence and sample from multinomial distibution
         if params.beam_search:
             logits_ = tf.reshape(x_logits, [tf.shape(outputs)[0], tf.shape(outputs)[1], vocab_size])[:, -1]
             top_k = tf.nn.top_k(logits_, params.beam_size)
             sample = top_k.indices
             norm_log_prob = tf.log(tf.nn.softmax(top_k.values))
-            #sample = tf.multinomial(logits_, params.beam_size)
-            #norm_log_prob = tf.log(tf.nn.softmax(logits_))
         sample_gr = tf.multinomial(tf.reshape(x_logits, [tf.shape(outputs)[0], tf.shape(outputs)[1], vocab_size])[:, -1]
                                     /params.temperature, 1)[:, 0][:]
-        #sample = tf.squeeze(x[:, -1])
         return decoder, x_logits, initial_state, final_state, sample_gr, sample, norm_log_prob
 
 # TODO: print values of input and decoder output
@@ -292,8 +285,6 @@ if __name__ == "__main__":
         mean_loss_by_example = tf.reduce_sum(masked_losses, reduction_indices=1) / d_seq_length
         rec_loss = tf.reduce_mean(mean_loss_by_example)
         perplexity = tf.exp(rec_loss)
-
-        #rec_loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(labels=labels, logits=dec_logits))
         # kl divergence calculation
         kld = -0.5 * tf.reduce_mean(tf.reduce_sum(1 + qz.distribution.logstd
                                                   - tf.square(qz.distribution.mean)
