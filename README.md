@@ -16,7 +16,9 @@ python vae_lstm-lstm.py
    debugger.
 
 ### Specific requirements
-- zhusuan - probabilistic framework
+- zhusuan - probabilistic framework https://github.com/thu-ml/zhusuan/
+- tensorflow >= 1.0
+- gensim (for pretrained w2vec)
 
 ### Other files
 - train_rnnlm.py - RNN Word-level language model. Can be trained on PTB or
