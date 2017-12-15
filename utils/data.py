@@ -161,8 +161,8 @@ class Dictionary(object):
         sorted_dict = sorted(counter.items(), key= lambda x: (-x[1], x[0]))
         # after sorting the dictionary, get ordered words
         words, _ = list(zip(*sorted_dict))
-        self._word2idx = dict(zip(words, range(len(words))))
-        self._idx2word = dict(zip(range(len(words)), words))
+        self._word2idx = dict(zip(words, range(1, len(words))))
+        self._idx2word = dict(zip(range(1, len(words)), words))
         self._word2idx['<PAD>'] = 0
         self._idx2word[0] = '<PAD>'
 
@@ -176,4 +176,3 @@ def extract_files(files_dir, extract_to):
         for file in os.listdir(files_dir):
             tarfile.open(os.path.join(files_dir, file), 'r:gz').extractall(extract_to)
     return 'Extraction successful'
-
