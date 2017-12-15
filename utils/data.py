@@ -161,8 +161,8 @@ class Dictionary(object):
         sorted_dict = sorted(counter.items(), key= lambda x: (-x[1], x[0]))
         # after sorting the dictionary, get ordered words
         words, _ = list(zip(*sorted_dict))
-        self._word2idx = dict(zip(words, range(1, len(words))))
-        self._idx2word = dict(zip(range(1, len(words)), words))
+        self._word2idx = dict(zip(words, range(1, len(words) + 1)))
+        self._idx2word = dict(zip(range(1, len(words) + 1), words))
         self._word2idx['<PAD>'] = 0
         self._idx2word[0] = '<PAD>'
 
