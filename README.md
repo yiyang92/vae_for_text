@@ -1,4 +1,5 @@
 # Using Variational Auto-Encoder For Generating Texts
+I discovered there are some mistakes in this implementation and will correct them as soon as I have time
 ## Overview
 
 Tensorflow implementation of [Generating Sentences from a Continuous Space](https://arxiv.org/abs/1511.06349).
