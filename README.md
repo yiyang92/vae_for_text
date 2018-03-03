@@ -15,7 +15,9 @@ python vae_lstm-lstm.py
  (or specify through command line parameters). You can choose to train on PTB dataset
   or on Game of Thrones dataset. Parameter debug can be set to true for calling Tensorflow
    debugger.
-- --beam_search use beam search
+- --dataset PTB or GOT
+- --beam_search use beam search (default=sample from the multinulli distribution)
+- --beam_size beam size, default set to 2
 
 During training generated text will not appear from the first iteration,
 be patiant and have fun :)

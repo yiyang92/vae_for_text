@@ -60,6 +60,7 @@ class Parameters():
                             help='decoder dropout keep rate', dest='dec_drop')
         parser.add_argument('--beam_search', default=self.beam_search,
                             action="store_true")
+        parser.add_argument('--beam_size', default=self.beam_size)
 
         args = parser.parse_args()
         self.input = args.data
@@ -71,3 +72,4 @@ class Parameters():
         self.latent_size = args.latent
         self.dec_keep_rate = args.dec_drop
         self.beam_search = args.beam_search
+        self.beam_size = args.beam_size
