@@ -9,6 +9,7 @@ import utils.data as data_
 import beam_search as bs
 import utils.model as model
 from utils.ptb import reader
+from utils import parameters
 
 from tensorflow.python import debug as tf_debug
 from tensorflow.python.util.nest import flatten
@@ -25,74 +26,6 @@ class PTBInput(object):
     self.input_data, self.targets = reader.ptb_producer(
         data, batch_size, num_steps, name=name)
 
-
-class Parameters():
-    # general parameters
-    latent_size = 13  # std=13, inputless_dec=111
-    num_epochs = 150
-    learning_rate = 0.0001
-    batch_size = 50
-    # for decoding
-    temperature = 1.0
-    gen_length = 20
-    # beam search
-    beam_search = True
-    beam_size = 3
-    # encoder
-    rnn_layers = 1
-    encoder_hidden = 191  # std=191, inputless_dec=350
-    keep_rate = 1.0
-    highway_lc = 2
-    highway_ls = 600
-    # decoder
-    decoder_hidden = 191
-    decoder_rnn_layers = 1
-    dec_keep_rate = 0.75
-    # data
-    datasets = ['GOT', 'PTB']
-    embed_size = 353 # std=353, inputless_dec=499
-    sent_max_size = 300
-    input = datasets[1]
-    debug = False
-    # use pretrained w2vec embeddings
-    pre_trained_embed = True
-    fine_tune_embed = True
-    # technical parameters
-    is_training = True
-    LOG_DIR = './model_logs/'
-    visualise = False
-    # gru base cell partially implemented
-    base_cell = tf.contrib.rnn.LSTMCell
-    #base_cell = tf.contrib.rnn.GRUCell
-    def parse_args(self):
-        import argparse
-        parser = argparse.ArgumentParser(description="Specify some parameters, all parameters also can be directly specify in "
-                                         "Parameters class")
-        parser.add_argument('--dataset', default=self.input, help='training dataset (GOT or PTB)', dest='data')
-        parser.add_argument('--ls', default=self.latent_size, help='latent space size', dest='ls')
-        parser.add_argument('--lr', default=self.learning_rate, help='learning rate', dest='lr')
-        parser.add_argument('--embed_dim', default=self.embed_size, help='embedding size', dest='embed')
-        parser.add_argument('--lst_state_dim_enc', default=self.encoder_hidden, help='encoder state size', dest='enc_hid')
-        parser.add_argument('--lst_state_dim_dec', default=self.decoder_hidden, help='decoder state size', dest='dec_hid')
-        parser.add_argument('--latent', default=self.latent_size, help='latent space size', dest='latent')
-        parser.add_argument('--dec_dropout', default=self.dec_keep_rate, help='decoder dropout keep rate', dest='dec_drop')
-
-        args = parser.parse_args()
-        self.input = args.data
-        print(self.input)
-        self.latent_size = args.ls
-        self.learning_rate = args.lr
-        self.embed_size = args.embed
-        self.encoder_hidden = args.enc_hid
-        self.decoder_hidden = args.dec_hid
-        self.latent_size = args.latent
-        self.dec_keep_rate = args.dec_drop
-
-params = Parameters()
-params.parse_args()
-
-
-
 def rnn_placeholders(state):
     """Convert RNN state tensors to placeholders with the zero state as default."""
     if isinstance(state, tf.contrib.rnn.LSTMStateTuple):
@@ -108,9 +41,8 @@ def rnn_placeholders(state):
         structure = [rnn_placeholders(x) for x in state]
         return tuple(structure)
 
-
 def online_inference(sess, data_dict, sample, seq, in_state=None, out_state=None, seed='<BOS>', length=None):
-    """ Generate sequence one character at a time, based on the previous character
+    """ Generate sequence one word at a time, based on the previous word
     """
     sentence = [seed]
     state = None
@@ -125,10 +57,11 @@ def online_inference(sess, data_dict, sample, seq, in_state=None, out_state=None
              feed.update({in_state: state})
         index, state = sess.run([sample, out_state], feed)
         sentence += [data_dict.idx2word[int(index)]]
-    print([word for word in sentence if word not in ['<BOS>']])
+    sentence = ' '.join([word for word in sentence if word not in ['<BOS>',
+                                                                  '<EOS>']])
+    print(sentence)
 
-
-def q_net(x, seq_len, batch_size=params.batch_size):
+def q_net(x, seq_len, batch_size):
     with zs.BayesianNet() as encoder:
         # construct lstm
         # cell = tf.nn.rnn_cell.BasicLSTMCell(params.cell_hidden_size)
@@ -149,11 +82,14 @@ def q_net(x, seq_len, batch_size=params.batch_size):
                     encoder_input = tf.layers.dense(prev_y, params.embed_size)
                     encoder_input = tf.reshape(encoder_input, [params.batch_size, s_l, params.embed_size])
                 else:  # hidden layers
-                    print(i)
                     prev_y = model.highway_network(prev_y, params.highway_ls)
 
-        outputs, final_state = tf.nn.dynamic_rnn(cell, inputs=encoder_input, sequence_length=seq_len,
-                                                initial_state=initial, swap_memory=True, dtype=tf.float32)
+        outputs, final_state = tf.nn.dynamic_rnn(cell,
+                                                 inputs=encoder_input,
+                                                 sequence_length=seq_len,
+                                                 initial_state=initial,
+                                                 swap_memory=True,
+                                                 dtype=tf.float32)
         final_state = tf.concat(final_state[0], 1)
         lz_mean = tf.layers.dense(inputs=final_state, units=params.latent_size, activation=None)
         lz_logstd = tf.layers.dense(inputs=final_state, units=params.latent_size, activation=None)
@@ -161,7 +97,6 @@ def q_net(x, seq_len, batch_size=params.batch_size):
         z = zs.Normal('z', lz_mean, lz_logstd, group_event_ndims=1)
         tf.summary.histogram('latent_space', z)
         return z
-
 
 @reuse('decoder')
 def vae_lstm(observed, batch_size, d_seq_l, embed, d_inputs, vocab_size, dropout_off=False):
@@ -181,36 +116,46 @@ def vae_lstm(observed, batch_size, d_seq_l, embed, d_inputs, vocab_size, dropout
         z_out = tf.reshape(tf.tile(tf.expand_dims(z, 1), (1, max_sl, 1)), [batch_size, -1, params.latent_size])
         c_inputs = tf.concat([dec_inps, z_out], 2)
         # z->decoder initial state
-        w1 = tf.get_variable('whl', [params.latent_size, params.highway_ls], tf.float32,
+        w1 = tf.get_variable('whl', [params.latent_size, params.highway_ls],
+                             tf.float32,
                              initializer=tf.truncated_normal_initializer())
-        b1 = tf.get_variable('bhl', [params.highway_ls], tf.float32, initializer=tf.ones_initializer())
-        z_dec = tf.nn.relu(tf.matmul(z, w1) + b1)
-        inp_h = tf.layers.dense(z_dec, params.decoder_hidden)
-        inp_c = tf.layers.dense(z_dec, params.decoder_hidden)
-        cell = model.make_rnn_cell([params.decoder_hidden for _ in range(params.decoder_rnn_layers)], base_cell=params.base_cell)
-        initial_state = rnn_placeholders((tf.contrib.rnn.LSTMStateTuple(inp_c, inp_h), ))
-        for tensor in flatten(initial_state):
-            tf.add_to_collection('rnn_decoder_state_input', tensor)
-        outputs, final_state = tf.nn.dynamic_rnn(cell, inputs=c_inputs,sequence_length=d_seq_l,
-                                                  initial_state=initial_state, swap_memory=True, dtype=tf.float32)
-        for tensor in flatten(final_state):
-            tf.add_to_collection('rnn_decoder_state_output', tensor)
+        b1 = tf.get_variable('bhl', [params.highway_ls], tf.float32,
+                             initializer=tf.ones_initializer())
+        z_dec = tf.matmul(z, w1) + b1
+        inp_h, inp_c = tf.split(tf.layers.dense(z_dec,
+                                                params.decoder_hidden * 2),
+                                2, axis=1)
+        cell = model.make_rnn_cell([
+          params.decoder_hidden for _ in range(
+            params.decoder_rnn_layers)], base_cell=params.base_cell)
+        initial_state = rnn_placeholders(
+            (tf.contrib.rnn.LSTMStateTuple(inp_c, inp_h), ))
+        outputs, final_state = tf.nn.dynamic_rnn(cell, inputs=c_inputs,
+                                                 sequence_length=d_seq_l,
+                                                 initial_state=initial_state,
+                                                 swap_memory=True,
+                                                 dtype=tf.float32)
         # define decoder network
         outputs_r = tf.reshape(outputs, [-1, params.decoder_hidden])
         x_logits = tf.layers.dense(outputs_r, units=vocab_size, activation=None)
-        print("x_logits", x_logits)
         # take unnormalized log-prob of the last word in sequence and sample from multinomial distibution
+        sample = None
+        norm_log_prob = None
         if params.beam_search:
-            logits_ = tf.reshape(x_logits, [tf.shape(outputs)[0], tf.shape(outputs)[1], vocab_size])[:, -1]
+            logits_ = tf.reshape(x_logits, [tf.shape(outputs)[0],
+                                            tf.shape(outputs)[1],
+                                            vocab_size])[:, -1]
             top_k = tf.nn.top_k(logits_, params.beam_size)
             sample = top_k.indices
             norm_log_prob = tf.log(tf.nn.softmax(top_k.values))
-        sample_gr = tf.multinomial(tf.reshape(x_logits, [tf.shape(outputs)[0], tf.shape(outputs)[1], vocab_size])[:, -1]
+        sample_gr = tf.multinomial(tf.reshape(x_logits, [tf.shape(outputs)[0],
+                                                         tf.shape(outputs)[1],
+                                                         vocab_size])[:, -1]
                                     /params.temperature, 1)[:, 0][:]
         return decoder, x_logits, initial_state, final_state, sample_gr, sample, norm_log_prob
 
 # TODO: print values of input and decoder output
-if __name__ == "__main__":
+def main(params):
     if params.input == 'GOT':
         corpus_path = "/home/luoyy/datasets_small/got"
         if not params.pre_trained_embed:
@@ -240,7 +185,6 @@ if __name__ == "__main__":
         print("----Corpus_Information--- \n Train data size: {} sentences \n Vocabulary size {}"
               "\n Test data size {}".format(len(train_data_raw), data_dict.vocab_size, len(test_data_raw)))
         # raw data ['<BOS>'...'<EOS>']
-        # TODO: use test dataset for perplexity calculation
         if params.pre_trained_embed:
             w2_vec, data_raw = data_.load_word_embeddings("PTB", params.input, params.embed_size, w2vec_it=5,
                                                           sentences=train_data_raw, tokenize=False)
@@ -259,17 +203,21 @@ if __name__ == "__main__":
         with tf.device("/cpu:0"):
             if not params.pre_trained_embed:
                 embedding = tf.get_variable(
-                    "embedding", [data_dict.vocab_size, params.embed_size], dtype=tf.float32)
+                    "embedding", [data_dict.vocab_size,
+                                  params.embed_size], dtype=tf.float32)
                 vect_inputs = tf.nn.embedding_lookup(embedding, inputs)
             else:
                 # [data_dict.vocab_size, params.embed_size]
-                embedding = tf.Variable(embed_arr, trainable=params.fine_tune_embed, name="embedding", dtype=tf.float32)
+                embedding = tf.Variable(
+                    embed_arr,
+                    trainable=params.fine_tune_embed,
+                    name="embedding", dtype=tf.float32)
                 vect_inputs = tf.nn.embedding_lookup(embedding, inputs)
         # inputs = tf.unstack(inputs, num=num_steps, axis=1)
         vocab_size = data_dict.vocab_size
         seq_length = tf.placeholder_with_default([0.0], shape=[None])
         d_seq_length = tf.placeholder(shape=[None], dtype=tf.float32)
-        qz = q_net(vect_inputs, seq_length)
+        qz = q_net(vect_inputs, seq_length, params.batch_size)
         decoder, dec_logits, initial_state, final_state, _, _, _,= vae_lstm({'z': qz},
                                                                            params.batch_size, d_seq_length,
                                                                            embedding, d_inputs_ps, vocab_size=vocab_size)
@@ -277,12 +225,14 @@ if __name__ == "__main__":
         current_len = tf.placeholder_with_default(params.sent_max_size, shape=())
         # tf.sequence_mask, tf.contrib.seq2seq.sequence_loss
         labels_flat = tf.reshape(labels, [-1])
-        cross_entr = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=dec_logits, labels=labels_flat)
+        cross_entr = tf.nn.sparse_softmax_cross_entropy_with_logits(
+            logits=dec_logits, labels=labels_flat)
         mask_labels = tf.sign(tf.to_float(labels_flat))
         masked_losses = mask_labels * cross_entr
         # reshape again
         masked_losses = tf.reshape(masked_losses, tf.shape(labels))
-        mean_loss_by_example = tf.reduce_sum(masked_losses, reduction_indices=1) / d_seq_length
+        mean_loss_by_example = tf.reduce_sum(masked_losses,
+                                             reduction_indices=1) / d_seq_length
         rec_loss = tf.reduce_mean(mean_loss_by_example)
         perplexity = tf.exp(rec_loss)
         # kl divergence calculation
@@ -295,7 +245,9 @@ if __name__ == "__main__":
         #annealing = tf.sigmoid((tf.to_float(anneal) - 2500)/100 + 1)
         annealing = (tf.tanh((tf.to_float(anneal) - 3500)/1000) + 1)/2
         # overall loss reconstruction loss - kl_regularization
-        lower_bound = tf.reduce_mean(d_seq_length)*rec_loss + tf.multiply(tf.to_float(annealing), tf.to_float(kld))
+        lower_bound = tf.reduce_mean(
+          d_seq_length)*rec_loss + tf.multiply(
+            tf.to_float(annealing), tf.to_float(kld))
         #lower_bound = rec_loss
         sm2 = [tf.summary.scalar('lower_bound', lower_bound),
                tf.summary.scalar('kld_coeff', annealing)]
@@ -304,7 +256,7 @@ if __name__ == "__main__":
         clipped_grad, _ = tf.clip_by_global_norm(gradients, 1)
         optimize = opt.apply_gradients(zip(clipped_grad, tf.trainable_variables()))
         #sample
-        _, logits, init_state, fin_output, smpl, sample,norm_log,= vae_lstm({}, 1, d_seq_length, embedding, d_inputs_ps, vocab_size=vocab_size, dropout_off=True)
+        _, logits, init_state, fin_output, smpl, sample,norm_log, = vae_lstm({}, 1, d_seq_length, embedding, d_inputs_ps, vocab_size=vocab_size, dropout_off=True)
         # merge summaries
         merged = tf.summary.merge_all()
         with tf.Session() as sess:
@@ -370,12 +322,14 @@ if __name__ == "__main__":
                                _ = [wf.write(str(s) + ' ') for s in coeff]
                            plt.plot(iters, kld_arr, label='KLD')
                            plt.xlabel('Iterations')
-                           plt.legend(bbox_to_anchor=(1.05, 1), loc=1, borderaxespad=0.)
+                           plt.legend(bbox_to_anchor=(1.05, 1),
+                                      loc=1, borderaxespad=0.)
                            plt.show()
                            plt.plot(iters, coeff, 'r--', label='annealing')
-                           plt.legend(bbox_to_anchor=(1.05, 1), loc=1, borderaxespad=0.)
+                           plt.legend(bbox_to_anchor=(1.05, 1),
+                                      loc=1, borderaxespad=0.)
                            plt.show()
-
-
-
-
+if __name__=="__main__":
+    params = parameters.Parameters()
+    params.parse_args()
+    main(params)

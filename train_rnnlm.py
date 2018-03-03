@@ -56,7 +56,7 @@ if __name__ == "__main__":
         data = [data_dict.seq2dx(dt) for dt in data_raw if len(dt) < params['sent_max_size']]
         labels_arr = [data_dict.seq2dx(dt) for dt in labels if len(dt) < params['sent_max_size']]
         print(labels[1])
-        print("----Corpus_Information--- \n Raw data size: {} sentences \n Vocabulary size {}" 
+        print("----Corpus_Information--- \n Raw data size: {} sentences \n Vocabulary size {}"
               "\n Limited data size {} sentences".format(len(data_raw), data_dict.vocab_size,  len(data)))
         vocab_size = data_dict.vocab_size
         print("Most common words : {}", [data_dict.idx2word[i] for i in range(vocab_size - 1, vocab_size - 7, -1)])
