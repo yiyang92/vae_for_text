@@ -6,10 +6,10 @@ import zhusuan as zs
 from zhusuan import reuse
 
 import utils.data as data_
-import beam_search as bs
 import utils.model as model
 from utils.ptb import reader
 from utils import parameters
+from utils.beam_search import beam_search
 
 from tensorflow.python import debug as tf_debug
 from tensorflow.python.util.nest import flatten
@@ -41,9 +41,9 @@ def rnn_placeholders(state):
         structure = [rnn_placeholders(x) for x in state]
         return tuple(structure)
 
-def online_inference(sess, data_dict, sample, seq, in_state=None, out_state=None, seed='<BOS>', length=None):
-    """ Generate sequence one word at a time, based on the previous word
-    """
+def online_inference(sess, data_dict, sample, seq, in_state=None,
+                     out_state=None, seed='<BOS>', length=None):
+    """Generate sequence one word at a time, based on the previous word."""
     sentence = [seed]
     state = None
     for _ in range(params.gen_length):
@@ -51,7 +51,8 @@ def online_inference(sess, data_dict, sample, seq, in_state=None, out_state=None
         if "<EOS>" in sentence:
             break
         input_sent_vect = [data_dict.word2idx[word] for word in sentence]
-        feed = {seq: np.array(input_sent_vect).reshape([1, len(input_sent_vect)]), length: [len(input_sent_vect)]}
+        feed = {seq: np.array(input_sent_vect).reshape([1, len(input_sent_vect)]),
+                length: [len(input_sent_vect)]}
         # for the first decoder step, the state is None
         if state is not None:
              feed.update({in_state: state})
@@ -99,21 +100,22 @@ def q_net(x, seq_len, batch_size):
         return z
 
 @reuse('decoder')
-def vae_lstm(observed, batch_size, d_seq_l, embed, d_inputs, vocab_size, dropout_off=False):
+def vae_lstm(observed, batch_size, d_seq_l, embed, d_inputs, vocab_size, gen_mode=False):
     with zs.BayesianNet(observed=observed) as decoder:
         # prepare input
         z_mean = tf.zeros([batch_size, params.latent_size])
-        z_logstd = tf.zeros([batch_size, params.latent_size])
-        z = zs.Normal('z', mean=z_mean, logstd=z_logstd, group_event_ndims=0)
+        z = zs.Normal('z', mean=z_mean, std=0.1, group_event_ndims=0)
         tf.summary.histogram('z|x', z)
         # z = [bath_size, l_s] -> [batch_size, seq_len, l_s]
         with tf.device("/cpu:0"):
             dec_inps = tf.nn.embedding_lookup(embed, d_inputs)
         # turn off dropout for generation:
-        if params.dec_keep_rate < 1 and not dropout_off:
+        if params.dec_keep_rate < 1 and not gen_mode:
             dec_inps = tf.nn.dropout(dec_inps, params.dec_keep_rate)
         max_sl = tf.shape(dec_inps)[1]
-        z_out = tf.reshape(tf.tile(tf.expand_dims(z, 1), (1, max_sl, 1)), [batch_size, -1, params.latent_size])
+        z_out = tf.reshape(
+          tf.tile(tf.expand_dims(z, 1), (1, max_sl, 1)),
+          [batch_size, -1, params.latent_size])
         c_inputs = tf.concat([dec_inps, z_out], 2)
         # z->decoder initial state
         w1 = tf.get_variable('whl', [params.latent_size, params.highway_ls],
@@ -136,23 +138,16 @@ def vae_lstm(observed, batch_size, d_seq_l, embed, d_inputs, vocab_size, dropout
                                                  swap_memory=True,
                                                  dtype=tf.float32)
         # define decoder network
+        if gen_mode:
+                # only interested in the last output
+                outputs = outputs[:, -1, :]
         outputs_r = tf.reshape(outputs, [-1, params.decoder_hidden])
         x_logits = tf.layers.dense(outputs_r, units=vocab_size, activation=None)
-        # take unnormalized log-prob of the last word in sequence and sample from multinomial distibution
-        sample = None
-        norm_log_prob = None
         if params.beam_search:
-            logits_ = tf.reshape(x_logits, [tf.shape(outputs)[0],
-                                            tf.shape(outputs)[1],
-                                            vocab_size])[:, -1]
-            top_k = tf.nn.top_k(logits_, params.beam_size)
-            sample = top_k.indices
-            norm_log_prob = tf.log(tf.nn.softmax(top_k.values))
-        sample_gr = tf.multinomial(tf.reshape(x_logits, [tf.shape(outputs)[0],
-                                                         tf.shape(outputs)[1],
-                                                         vocab_size])[:, -1]
-                                    /params.temperature, 1)[:, 0][:]
-        return decoder, x_logits, initial_state, final_state, sample_gr, sample, norm_log_prob
+            sample = tf.nn.softmax(x_logits)
+        else:
+            sample = tf.multinomial(x_logits / params.temperature, 1)[0][0]
+        return x_logits, (initial_state, final_state), sample
 
 # TODO: print values of input and decoder output
 def main(params):
@@ -218,15 +213,16 @@ def main(params):
         seq_length = tf.placeholder_with_default([0.0], shape=[None])
         d_seq_length = tf.placeholder(shape=[None], dtype=tf.float32)
         qz = q_net(vect_inputs, seq_length, params.batch_size)
-        decoder, dec_logits, initial_state, final_state, _, _, _,= vae_lstm({'z': qz},
-                                                                           params.batch_size, d_seq_length,
-                                                                           embedding, d_inputs_ps, vocab_size=vocab_size)
+        x_logits, _, _ = vae_lstm({'z': qz}, params.batch_size,
+                                  d_seq_length, embedding,
+                                  d_inputs_ps, vocab_size=vocab_size)
         # loss, masking <PAD>
-        current_len = tf.placeholder_with_default(params.sent_max_size, shape=())
+        current_len = tf.placeholder_with_default(params.sent_max_size,
+                                                  shape=())
         # tf.sequence_mask, tf.contrib.seq2seq.sequence_loss
         labels_flat = tf.reshape(labels, [-1])
         cross_entr = tf.nn.sparse_softmax_cross_entropy_with_logits(
-            logits=dec_logits, labels=labels_flat)
+            logits=x_logits, labels=labels_flat)
         mask_labels = tf.sign(tf.to_float(labels_flat))
         masked_losses = mask_labels * cross_entr
         # reshape again
@@ -242,28 +238,29 @@ def main(params):
         tf.summary.scalar('kl_divergence', kld)
         # kld weight annealing
         anneal = tf.placeholder(tf.int32)
-        #annealing = tf.sigmoid((tf.to_float(anneal) - 2500)/100 + 1)
         annealing = (tf.tanh((tf.to_float(anneal) - 3500)/1000) + 1)/2
         # overall loss reconstruction loss - kl_regularization
-        lower_bound = tf.reduce_mean(
-          d_seq_length)*rec_loss + tf.multiply(
-            tf.to_float(annealing), tf.to_float(kld))
+        lower_bound = rec_loss + tf.multiply(
+            tf.to_float(annealing), tf.to_float(kld)) / 10
         #lower_bound = rec_loss
         sm2 = [tf.summary.scalar('lower_bound', lower_bound),
                tf.summary.scalar('kld_coeff', annealing)]
         gradients = tf.gradients(lower_bound, tf.trainable_variables())
         opt = tf.train.AdamOptimizer(learning_rate=params.learning_rate)
-        clipped_grad, _ = tf.clip_by_global_norm(gradients, 1)
-        optimize = opt.apply_gradients(zip(clipped_grad, tf.trainable_variables()))
+        clipped_grad, _ = tf.clip_by_global_norm(gradients, 5)
+        optimize = opt.apply_gradients(zip(clipped_grad,
+                                           tf.trainable_variables()))
         #sample
-        _, logits, init_state, fin_output, smpl, sample,norm_log, = vae_lstm({}, 1, d_seq_length, embedding, d_inputs_ps, vocab_size=vocab_size, dropout_off=True)
+        logits, states, smpl = vae_lstm({}, 1, d_seq_length, embedding,
+                                        d_inputs_ps, vocab_size=vocab_size,
+                                        gen_mode=True)
+        init_state = states[0]
+        fin_output = states[1]
         # merge summaries
         merged = tf.summary.merge_all()
         with tf.Session() as sess:
-
             sess.run([tf.global_variables_initializer(),
                       tf.local_variables_initializer()])
-
             if params.debug:
                 sess = tf_debug.LocalCLIDebugWrapperSession(sess)
             summary_writer = tf.summary.FileWriter(params.LOG_DIR, sess.graph)
@@ -295,16 +292,23 @@ def main(params):
                     kld_arr.append(kld_)
                     coeff.append(ann_)
                     if cur_it % 100 == 0 and cur_it != 0:
-                        print("VLB after {} ({}) iterations (epoch): {} KLD: {} Annealing Coeff: {} CE: {}".format(cur_it, e,lb, kld_, ann_, r_loss))
+                        print("VLB after {} ({}) iterations (epoch): {} KLD: "
+                              "{} Annealing Coeff: {} CE: {}".format(
+                                  cur_it, e,lb, kld_, ann_, r_loss))
                         print("Perplexity: {}".format(perplexity_))
                     if cur_it % 150 == 0:
                         if not params.beam_search:
                             params.is_training = False
-                            online_inference(sess, data_dict, sample=smpl, seq=d_inputs_ps, in_state=init_state,
-                                         out_state=fin_output, length=d_seq_length)
+                            online_inference(sess, data_dict,
+                                             sample=smpl, seq=d_inputs_ps,
+                                             in_state=init_state,
+                                             out_state=fin_output,
+                                             length=d_seq_length)
                         else:
-                            gen_sentence = bs.beam_search(sess, d_inputs_ps, data_dict, norm_log, sample, init_state, fin_output,
-                                            params.gen_length, length=d_seq_length, seed='<BOS>')
+                            gen_sentence = beam_search(sess, data_dict, states,
+                                                       smpl, (d_inputs_ps,
+                                                        d_seq_length), params,
+                                                       beam_size=params.beam_size)
                             print(gen_sentence)
                     if cur_it % 400 == 0 and cur_it!=0:
                        # saver = tf.train.Saver()

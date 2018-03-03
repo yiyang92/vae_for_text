@@ -48,7 +48,6 @@ def tokenize_text_and_make_labels(corpus_path, sent_file="./trained_embeddings/s
         pickle.dump(labels, file=wlf)
     return sentences, labels
 
-
 def ptb_data_read(corpus_file, sent_file):
     if os.path.exists(sent_file):
         print("Loading sentences file")
@@ -66,20 +65,18 @@ def ptb_data_read(corpus_file, sent_file):
         pickle.dump(sentences, file=wf)
     return sentences
 
-
 def ptb_read(data_path):
     # train_set
     train_data = ptb_data_read(os.path.join(data_path, 'ptb.train.txt'),
-                                                sent_file="./trained_embeddings/sent_ptb_train.pickle")
+                               sent_file="./trained_embeddings/sent_ptb_train.pickle")
 
     test_data = ptb_data_read(os.path.join(data_path, 'ptb.test.txt'),
-                                                sent_file="./trained_embeddings/sent_ptb_test.pickle")
+                              sent_file="./trained_embeddings/sent_ptb_test.pickle")
 
     val_data = ptb_data_read(os.path.join(data_path, 'ptb.valid.txt'),
-                                                sent_file="./trained_embeddings/sent_ptb_val.pickle")
+                             sent_file="./trained_embeddings/sent_ptb_val.pickle")
 
     return train_data, test_data, val_data
-
 
 # use wor2vec for learning word-embeddings
 def load_word_embeddings(corpus_path, embed_fn, embed_size, w2vec_it=5, tokenize=True, sentences=None, model_path="./trained_embeddings"):
@@ -109,15 +106,6 @@ def load_word_embeddings(corpus_path, embed_fn, embed_size, w2vec_it=5, tokenize
         os.makedirs(model_path)
     w2vec.wv.save_word2vec_format(os.path.join(model_path, embed_fn))
     return KeyedVectors.load_word2vec_format(os.path.join(model_path, embed_fn)), sentences
-
-# TODO: implement batch generator
-class BatchGenerator():
-    def __init__(self):
-        pass
-
-    def next_batch(self):
-        pass
-
 
 class Dictionary(object):
     def __init__(self, sentences):
