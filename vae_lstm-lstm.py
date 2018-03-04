@@ -62,29 +62,16 @@ def online_inference(sess, data_dict, sample, seq, in_state=None,
                                                                   '<EOS>']])
     print(sentence)
 
-def q_net(x, seq_len, batch_size):
+def q_net(encoder_input, seq_len, batch_size):
     with zs.BayesianNet() as encoder:
         # construct lstm
         # cell = tf.nn.rnn_cell.BasicLSTMCell(params.cell_hidden_size)
         # cells = tf.nn.rnn_cell.MultiRNNCell([cell]*params.rnn_layers)
-        cell = model.make_rnn_cell([params.decoder_hidden for _ in range(params.decoder_rnn_layers)], base_cell=params.base_cell)
+        cell = model.make_rnn_cell([params.decoder_hidden for _ in range(
+            params.decoder_rnn_layers)], base_cell=params.base_cell)
         initial = cell.zero_state(batch_size, dtype=tf.float32)
-        print(int)
         if params.keep_rate < 1:
-            x = tf.nn.dropout(x, params.keep_rate)
-        s_l = tf.shape(x)[1]
-        # Higway network [S.Sementiuta et.al]
-        for i in range(params.highway_lc):
-            with tf.variable_scope("hw_layer_enc{0}".format(i)) as scope:
-                if i == 0:  # first, input layer
-                    x = tf.reshape(x, [-1, params.embed_size])
-                    prev_y = tf.layers.dense(x, params.highway_ls, tf.nn.relu)
-                elif i == params.highway_lc - 1:  # last, output layer
-                    encoder_input = tf.layers.dense(prev_y, params.embed_size)
-                    encoder_input = tf.reshape(encoder_input, [params.batch_size, s_l, params.embed_size])
-                else:  # hidden layers
-                    prev_y = model.highway_network(prev_y, params.highway_ls)
-
+            encoder_input = tf.nn.dropout(encoder_input, params.keep_rate)
         outputs, final_state = tf.nn.dynamic_rnn(cell,
                                                  inputs=encoder_input,
                                                  sequence_length=seq_len,
@@ -92,8 +79,24 @@ def q_net(x, seq_len, batch_size):
                                                  swap_memory=True,
                                                  dtype=tf.float32)
         final_state = tf.concat(final_state[0], 1)
-        lz_mean = tf.layers.dense(inputs=final_state, units=params.latent_size, activation=None)
-        lz_logstd = tf.layers.dense(inputs=final_state, units=params.latent_size, activation=None)
+        if params.encode == 'hw':
+            # Higway network [S.Sementiuta et.al]
+            for i in range(params.highway_lc):
+                with tf.variable_scope("hw_layer_enc{0}".format(i)) as scope:
+                    if i == 0:  # first, input layer
+                        prev_y = tf.layers.dense(final_state, params.highway_ls)
+                    elif i == params.highway_lc - 1:  # last, output layer
+                        final_state = tf.layers.dense(prev_y,
+                                                      params.latent_size * 2)
+                    else:  # hidden layers
+                        prev_y = model.highway_network(prev_y,
+                                                       params.highway_ls)
+            lz_mean, lz_logstd = tf.split(final_state, 2, axis=1)
+        elif params.encode == 'mlp':
+            lz_mean = tf.layers.dense(inputs=final_state,
+                                      units=params.latent_size)
+            lz_logstd = tf.layers.dense(inputs=final_state,
+                                        units=params.latent_size)
         # define latent variable`s Stochastic Tensor
         z = zs.Normal('z', lz_mean, lz_logstd, group_event_ndims=1)
         tf.summary.histogram('latent_space', z)
@@ -113,26 +116,47 @@ def vae_lstm(observed, batch_size, d_seq_l, embed, d_inputs, vocab_size, gen_mod
         if params.dec_keep_rate < 1 and not gen_mode:
             dec_inps = tf.nn.dropout(dec_inps, params.dec_keep_rate)
         max_sl = tf.shape(dec_inps)[1]
-        z_out = tf.reshape(
-          tf.tile(tf.expand_dims(z, 1), (1, max_sl, 1)),
-          [batch_size, -1, params.latent_size])
-        c_inputs = tf.concat([dec_inps, z_out], 2)
-        # z->decoder initial state
-        w1 = tf.get_variable('whl', [params.latent_size, params.highway_ls],
-                             tf.float32,
-                             initializer=tf.truncated_normal_initializer())
-        b1 = tf.get_variable('bhl', [params.highway_ls], tf.float32,
-                             initializer=tf.ones_initializer())
-        z_dec = tf.matmul(z, w1) + b1
-        inp_h, inp_c = tf.split(tf.layers.dense(z_dec,
-                                                params.decoder_hidden * 2),
-                                2, axis=1)
+        # define cell
         cell = model.make_rnn_cell([
           params.decoder_hidden for _ in range(
             params.decoder_rnn_layers)], base_cell=params.base_cell)
-        initial_state = rnn_placeholders(
-            (tf.contrib.rnn.LSTMStateTuple(inp_c, inp_h), ))
-        outputs, final_state = tf.nn.dynamic_rnn(cell, inputs=c_inputs,
+        if params.decode == 'hw':
+            # Higway network [S.Sementiuta et.al]
+            for i in range(params.highway_lc):
+                with tf.variable_scope("hw_layer_enc{0}".format(i)) as scope:
+                    if i == 0:  # first, input layer
+                        prev_y = tf.layers.dense(z,
+                                                 params.decoder_hidden * 2)
+                    elif i == params.highway_lc - 1:  # last, output layer
+                        z_dec = tf.layers.dense(prev_y,
+                                                params.decoder_hidden * 2)
+                    else:  # hidden layers
+                        prev_y = model.highway_network(prev_y,
+                                                       params.highway_ls)
+            inp_h, inp_c = tf.split(z_dec, 2, axis=1)
+            initial_state = rnn_placeholders(
+                (tf.contrib.rnn.LSTMStateTuple(inp_c, inp_h), ))
+        elif params.decode == 'concat':
+            z_out = tf.reshape(
+              tf.tile(tf.expand_dims(z, 1), (1, max_sl, 1)),
+              [batch_size, -1, params.latent_size])
+            dec_inps = tf.concat([dec_inps, z_out], 2)
+            initial_state = rnn_placeholders(
+                cell.zero_state(tf.shape(dec_inps)[0], tf.float32))
+        elif params.decode == 'mlp':
+            # z->decoder initial state
+            w1 = tf.get_variable('whl', [params.latent_size, params.highway_ls],
+                                 tf.float32,
+                                 initializer=tf.truncated_normal_initializer())
+            b1 = tf.get_variable('bhl', [params.highway_ls], tf.float32,
+                                 initializer=tf.ones_initializer())
+            z_dec = tf.matmul(z, w1) + b1
+            inp_h, inp_c = tf.split(tf.layers.dense(z_dec,
+                                                    params.decoder_hidden * 2),
+                                    2, axis=1)
+            initial_state = rnn_placeholders(
+                (tf.contrib.rnn.LSTMStateTuple(inp_c, inp_h), ))
+        outputs, final_state = tf.nn.dynamic_rnn(cell, inputs=dec_inps,
                                                  sequence_length=d_seq_l,
                                                  initial_state=initial_state,
                                                  swap_memory=True,
@@ -149,23 +173,26 @@ def vae_lstm(observed, batch_size, d_seq_l, embed, d_inputs, vocab_size, gen_mod
             sample = tf.multinomial(x_logits / params.temperature, 1)[0][0]
         return x_logits, (initial_state, final_state), sample
 
-# TODO: print values of input and decoder output
 def main(params):
     if params.input == 'GOT':
         corpus_path = "/home/luoyy/datasets_small/got"
         if not params.pre_trained_embed:
             data_raw, labels = data_.tokenize_text_and_make_labels(corpus_path)
         else:
-            w2_vec, data_raw = data_.load_word_embeddings(corpus_path, params.input, params.embed_size)
+            w2_vec, data_raw = data_.load_word_embeddings(corpus_path,
+                                                          params.input,
+                                                          params.embed_size)
         # get embeddings, prepare data
         # TODO: change initial data process for no pretrained embedding option
         print("building dictionary")
         data_dict = data_.Dictionary(data_raw)
-        print(data_raw[1])
-        data = [data_dict.seq2dx(dt[1:]) for dt in data_raw if len(dt) < params.sent_max_size]
-        labels_arr = [data_dict.seq2dx(dt[:-1]) for dt in data_raw if len(dt) < params.sent_max_size]
+        data = [data_dict.seq2dx(dt[1:]) \
+                for dt in data_raw if len(dt) < params.sent_max_size]
+        labels_arr = [data_dict.seq2dx(dt[:-1]) \
+                      for dt in data_raw if len(dt) < params.sent_max_size]
         print("----Corpus_Information--- \n Raw data size: {} sentences \n Vocabulary size {}"
-              "\n Limited data size {} sentences \n".format(len(data_raw), data_dict.vocab_size, len(data)))
+              "\n Limited data size {} sentences \n".format(
+                  len(data_raw), data_dict.vocab_size, len(data)))
         if params.pre_trained_embed:
             embed_arr = np.zeros([data_dict.vocab_size, params.embed_size])
             for i in range(embed_arr.shape[0]):
@@ -175,22 +202,29 @@ def main(params):
     elif params.input == 'PTB':
         # data in form [data, labels]
         train_data_raw, valid_data_raw, test_data_raw = data_.ptb_read('./PTB_DATA/data')
-        print(train_data_raw[0:2])
         data_dict = data_.Dictionary(train_data_raw)
         print("----Corpus_Information--- \n Train data size: {} sentences \n Vocabulary size {}"
-              "\n Test data size {}".format(len(train_data_raw), data_dict.vocab_size, len(test_data_raw)))
+              "\n Test data size {}".format(
+                  len(train_data_raw), data_dict.vocab_size,
+                  len(test_data_raw)))
         # raw data ['<BOS>'...'<EOS>']
         if params.pre_trained_embed:
-            w2_vec, data_raw = data_.load_word_embeddings("PTB", params.input, params.embed_size, w2vec_it=5,
-                                                          sentences=train_data_raw, tokenize=False)
+            w2_vec, data_raw = data_.load_word_embeddings("PTB",
+                                                          params.input,
+                                                          params.embed_size,
+                                                          w2vec_it=5,
+                                                          sentences=train_data_raw,
+                                                          tokenize=False)
             embed_arr = np.zeros([data_dict.vocab_size, params.embed_size])
             for i in range(embed_arr.shape[0]):
                 if i == 0:
                     continue
                 embed_arr[i] = w2_vec.word_vec(data_dict.idx2word[i])
         # data=[<BOS> ....], labels=[.....<EOS>]
-        data = [[data_dict.word2idx[word] for word in sent[:-1]] for sent in train_data_raw]
-        labels_arr = [[data_dict.word2idx[word] for word in sent[1:]] for sent in train_data_raw]
+        data = [[data_dict.word2idx[word] \
+                 for word in sent[:-1]] for sent in train_data_raw]
+        labels_arr = [[data_dict.word2idx[word] \
+                       for word in sent[1:]] for sent in train_data_raw]
     with tf.Graph().as_default() as graph:
         inputs = tf.placeholder(shape=[None, None], dtype=tf.int32)
         d_inputs_ps = tf.placeholder(dtype=tf.int32, shape=[None, None])

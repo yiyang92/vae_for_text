@@ -1,6 +1,6 @@
 class Parameters():
     # general parameters
-    latent_size = 13  # std=13, inputless_dec(keep_rate=0.0)=111
+    latent_size = 13  # std=13, inputless_dec(dec_keep_rate=0.0)=111
     num_epochs = 150
     learning_rate = 0.001
     batch_size = 50
@@ -13,13 +13,16 @@ class Parameters():
     # encoder
     rnn_layers = 1
     encoder_hidden = 191  # std=191, inputless_dec=350
+    encode = 'hw' # 'hw' or 'mlp'
+    # highway networks
     keep_rate = 1.0
     highway_lc = 2
     highway_ls = 600
     # decoder
     decoder_hidden = 191
     decoder_rnn_layers = 1
-    dec_keep_rate = 0.75
+    dec_keep_rate = 0.62
+    decode = 'hw' # can use 'hw', 'concat', 'mlp'
     # data
     datasets = ['GOT', 'PTB']
     embed_size = 353 # std=353, inputless_dec=499
@@ -61,6 +64,10 @@ class Parameters():
         parser.add_argument('--beam_search', default=self.beam_search,
                             action="store_true")
         parser.add_argument('--beam_size', default=self.beam_size)
+        parser.add_argument('--decode', default=self.decode,
+                            help='define mapping from z->lstm. mlp, concat, hw')
+        parser.add_argument('--encode', default=self.encode,
+                            help='define mapping from lstm->z. mlp, hw')
 
         args = parser.parse_args()
         self.input = args.data
@@ -73,3 +80,5 @@ class Parameters():
         self.dec_keep_rate = args.dec_drop
         self.beam_search = args.beam_search
         self.beam_size = args.beam_size
+        self.decode = args.decode
+        self.encode = args.encode
