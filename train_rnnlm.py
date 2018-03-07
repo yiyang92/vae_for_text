@@ -7,6 +7,8 @@ import tqdm
 
 import utils.data as data_
 import utils.model as model
+from utils.parameters import Parameters
+
 # TODO : Make multiple layers work!
 params = {
     'batch_size': 20,
@@ -20,8 +22,19 @@ params = {
     'gen_length': 20,
     'temperature': 0.5,
     'keep_rate': 0.66,
-    'input': ['GOT', 'PTB'][1]
+    'input': ['GOT', 'PTB'][1],
+    'vocab_drop': 3
 }
+# for back compatibility
+params_c = Parameters()
+params_c.batch_size = params['batch_size']
+params_c.num_epochs = params['num_epochs']
+params_c.embed_size = params['embed_size']
+params_c.learning_rate = params['learning_rate']
+params_c.pre_trained_embed = False
+params_c.beam_search = False
+params_c.vocab_drop = params['vocab_drop']
+params_c.embed_size = params['embed_size']
 
 
 def online_inference(sess, data_dict, sample, seq, in_state=None, out_state=None, seed='<BOS>'):
@@ -34,48 +47,36 @@ def online_inference(sess, data_dict, sample, seq, in_state=None, out_state=None
         if "<EOS>" in sentence:
             break
         input_sent_vect = [data_dict.word2idx[word] for word in sentence]
-        feed = {seq: np.array(input_sent_vect).reshape([1, len(input_sent_vect)]), length: [len(input_sent_vect)],
+        feed = {seq: np.array(input_sent_vect).reshape([1,
+                                                        len(input_sent_vect)]),
+                length: [len(input_sent_vect)],
                 keep_rate: 1.0}
         # for the first decoder step, the state is None
         if state is not None:
              feed.update({in_state: state})
         index, state = sess.run([sample, out_state], feed)
         sentence += [data_dict.idx2word[idx] for idx in index]
-    print([word for word in sentence if word not in ['<EOS>', '<PAD>']])
-
+    print(' '.join([word for word in sentence if word not in ['<EOS>',
+                                                             '<PAD>', '<BOS>']]))
 
 if __name__ == "__main__":
     if params['input'] == 'GOT':
         # GOT corpus
         corpus_path = "/home/luoyy/datasets_small/got"
-        data_raw, labels = data_.tokenize_text_and_make_labels(corpus_path)
-        # get embeddings, prepare data
-        print("building dictionary")
-        data_dict = data_.Dictionary(data_raw)
-        print(data_raw[1])
-        data = [data_dict.seq2dx(dt) for dt in data_raw if len(dt) < params['sent_max_size']]
-        labels_arr = [data_dict.seq2dx(dt) for dt in labels if len(dt) < params['sent_max_size']]
-        print(labels[1])
-        print("----Corpus_Information--- \n Raw data size: {} sentences \n Vocabulary size {}"
-              "\n Limited data size {} sentences".format(len(data_raw), data_dict.vocab_size,  len(data)))
+        data_raw = data_.got_read(corpus_path)
+        data, labels_arr, _, data_dict = data_.prepare_data(data_raw,
+                                                                    params_c)
         vocab_size = data_dict.vocab_size
         print("Most common words : {}", [data_dict.idx2word[i] for i in range(vocab_size - 1, vocab_size - 7, -1)])
         del(data_raw)
     elif params['input'] == 'PTB':
         # data in form [data, labels]
         train_data_raw, valid_data_raw, test_data_raw = data_.ptb_read('./PTB_DATA/data')
-        # Can test and validationa data contain more words??
-        print(len(train_data_raw))
-        print(train_data_raw[0:2])
-        data_dict = data_.Dictionary(train_data_raw)
-        vocab_size = data_dict.vocab_size
-        print("----Corpus_Information--- \n Train data size: {} sentences \n Vocabulary size {}"
-              "\n Test data size {}".format(len(train_data_raw), vocab_size, len(test_data_raw)))
-        print("Most common words : {}", [data_dict.idx2word[i] for i in range(vocab_size-1, vocab_size-7, -1)])
-        # raw data ['<BOS>'...'<EOS>']
-        # TODO: use test dataset for perplexity calculation
-        data = [[data_dict.word2idx[word] for word in sent[:-1]] for sent in train_data_raw]
-        labels_arr = [[data_dict.word2idx[word] for word in sent[1:]] for sent in train_data_raw]
+        # data in form [data, labels]
+        train_data_raw, valid_data_raw, test_data_raw = data_.ptb_read(
+            './PTB_DATA/data')
+        data, labels_arr, _, data_dict = data_.prepare_data(
+            train_data_raw, params_c)
     with tf.Graph().as_default() as graph:
         inputs = tf.placeholder(shape=[None, None], dtype=tf.int32)
         with tf.device("/cpu:0"):
