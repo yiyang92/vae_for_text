@@ -188,3 +188,30 @@ def extract_files(files_dir, extract_to):
         for file in os.listdir(files_dir):
             tarfile.open(os.path.join(files_dir, file), 'r:gz').extractall(extract_to)
     return 'Extraction successful'
+
+def prepare_data(data_raw, params):
+    # get embeddings, prepare data
+    print("building dictionary")
+    data_dict = Dictionary(data_raw, params.vocab_drop)
+    embed_arr = None
+    if params.pre_trained_embed:
+        w2_vec = train_w2vec(params.input, params.embed_size,
+                            w2vec_it=5,
+                            sentences=data_dict.sentences,
+                            model_path="./trained_embeddings")
+        embed_arr = np.zeros([data_dict.vocab_size, params.embed_size])
+        for i in range(embed_arr.shape[0]):
+            if i == 0:
+                continue
+            embed_arr[i] = w2_vec.word_vec(data_dict.idx2word[i])
+    data = [[data_dict.word2idx[word] \
+             for word in sent[:-1]] for sent in data_dict.sentences \
+            if len(sent) < params.sent_max_size - 2]
+    labels = [[data_dict.word2idx[word] \
+                   for word in sent[1:]] for sent in data_dict.sentences \
+                  if len(sent) < params.sent_max_size - 2]
+    print("----Corpus_Information--- \n "
+          "Raw data size: {} sentences \n Vocabulary size {}"
+          "\n Limited data size {} sentences \n".format(
+              len(data_raw), data_dict.vocab_size, len(data)))
+    return data, labels, embed_arr, data_dict

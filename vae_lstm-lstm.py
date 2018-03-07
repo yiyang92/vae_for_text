@@ -177,53 +177,14 @@ def main(params):
     if params.input == 'GOT':
         corpus_path = "/home/luoyy/datasets_small/got"
         data_raw = data_.got_read(corpus_path)
-        # get embeddings, prepare data
-        print("building dictionary")
-        data_dict = data_.Dictionary(data_raw, params.vocab_drop)
-        print(data_raw[0:2])
-        print(data_dict.sentences[0:2])
-        if params.pre_trained_embed:
-            w2_vec = data_.train_w2vec(params.input, params.embed_size,
-                                w2vec_it=5,
-                                sentences=data_dict.sentences,
-                                model_path="./trained_embeddings")
-            embed_arr = np.zeros([data_dict.vocab_size, params.embed_size])
-            for i in range(embed_arr.shape[0]):
-                if i == 0:
-                    continue
-                embed_arr[i] = w2_vec.word_vec(data_dict.idx2word[i])
-        data = [data_dict.seq2dx(dt[1:]) \
-                for dt in data_raw if len(dt) < params.sent_max_size - 2]
-        labels_arr = [data_dict.seq2dx(dt[:-1]) \
-                      for dt in data_raw if len(dt) < params.sent_max_size - 2]
-        print("----Corpus_Information--- \n Raw data size: {} sentences \n Vocabulary size {}"
-              "\n Limited data size {} sentences \n".format(
-                  len(data_raw), data_dict.vocab_size, len(data)))
-
+        data, labels_arr, embed_arr, data_dict = data_.prepare_data(data_raw,
+                                                                    params)
     elif params.input == 'PTB':
         # data in form [data, labels]
         train_data_raw, valid_data_raw, test_data_raw = data_.ptb_read(
             './PTB_DATA/data')
-        data_dict = data_.Dictionary(train_data_raw, params.vocab_drop)
-        print("----Corpus_Information--- \n Train data size: {} sentences \n Vocabulary size {}"
-              "\n Test data size {}".format(
-                  len(train_data_raw), data_dict.vocab_size,
-                  len(test_data_raw)))
-        # raw data ['<BOS>'...'<EOS>']
-        if params.pre_trained_embed:
-            w2_vec = data_.train_w2vec(params.input, params.embed_size,
-                                w2vec_it=5, sentences=data_dict.sentences,
-                                model_path="./trained_embeddings")
-            embed_arr = np.zeros([data_dict.vocab_size, params.embed_size])
-            for i in range(embed_arr.shape[0]):
-                if i == 0:
-                    continue
-                embed_arr[i] = w2_vec.word_vec(data_dict.idx2word[i])
-        # data=[<BOS> ....], labels=[.....<EOS>]
-        data = [[data_dict.word2idx[word] \
-                 for word in sent[:-1]] for sent in train_data_raw]
-        labels_arr = [[data_dict.word2idx[word] \
-                       for word in sent[1:]] for sent in train_data_raw]
+        data, labels_arr, embed_arr, data_dict = data_.prepare_data(
+            train_data_raw, params)
     with tf.Graph().as_default() as graph:
         inputs = tf.placeholder(shape=[None, None], dtype=tf.int32)
         d_inputs_ps = tf.placeholder(dtype=tf.int32, shape=[None, None])
