@@ -176,45 +176,44 @@ def vae_lstm(observed, batch_size, d_seq_l, embed, d_inputs, vocab_size, gen_mod
 def main(params):
     if params.input == 'GOT':
         corpus_path = "/home/luoyy/datasets_small/got"
-        if not params.pre_trained_embed:
-            data_raw, labels = data_.tokenize_text_and_make_labels(corpus_path)
-        else:
-            w2_vec, data_raw = data_.load_word_embeddings(corpus_path,
-                                                          params.input,
-                                                          params.embed_size)
+        data_raw = data_.got_read(corpus_path)
         # get embeddings, prepare data
-        # TODO: change initial data process for no pretrained embedding option
         print("building dictionary")
-        data_dict = data_.Dictionary(data_raw)
-        data = [data_dict.seq2dx(dt[1:]) \
-                for dt in data_raw if len(dt) < params.sent_max_size]
-        labels_arr = [data_dict.seq2dx(dt[:-1]) \
-                      for dt in data_raw if len(dt) < params.sent_max_size]
-        print("----Corpus_Information--- \n Raw data size: {} sentences \n Vocabulary size {}"
-              "\n Limited data size {} sentences \n".format(
-                  len(data_raw), data_dict.vocab_size, len(data)))
+        data_dict = data_.Dictionary(data_raw, params.vocab_drop)
+        print(data_raw[0:2])
+        print(data_dict.sentences[0:2])
         if params.pre_trained_embed:
+            w2_vec = data_.train_w2vec(params.input, params.embed_size,
+                                w2vec_it=5,
+                                sentences=data_dict.sentences,
+                                model_path="./trained_embeddings")
             embed_arr = np.zeros([data_dict.vocab_size, params.embed_size])
             for i in range(embed_arr.shape[0]):
                 if i == 0:
                     continue
                 embed_arr[i] = w2_vec.word_vec(data_dict.idx2word[i])
+        data = [data_dict.seq2dx(dt[1:]) \
+                for dt in data_raw if len(dt) < params.sent_max_size - 2]
+        labels_arr = [data_dict.seq2dx(dt[:-1]) \
+                      for dt in data_raw if len(dt) < params.sent_max_size - 2]
+        print("----Corpus_Information--- \n Raw data size: {} sentences \n Vocabulary size {}"
+              "\n Limited data size {} sentences \n".format(
+                  len(data_raw), data_dict.vocab_size, len(data)))
+
     elif params.input == 'PTB':
         # data in form [data, labels]
-        train_data_raw, valid_data_raw, test_data_raw = data_.ptb_read('./PTB_DATA/data')
-        data_dict = data_.Dictionary(train_data_raw)
+        train_data_raw, valid_data_raw, test_data_raw = data_.ptb_read(
+            './PTB_DATA/data')
+        data_dict = data_.Dictionary(train_data_raw, params.vocab_drop)
         print("----Corpus_Information--- \n Train data size: {} sentences \n Vocabulary size {}"
               "\n Test data size {}".format(
                   len(train_data_raw), data_dict.vocab_size,
                   len(test_data_raw)))
         # raw data ['<BOS>'...'<EOS>']
         if params.pre_trained_embed:
-            w2_vec, data_raw = data_.load_word_embeddings("PTB",
-                                                          params.input,
-                                                          params.embed_size,
-                                                          w2vec_it=5,
-                                                          sentences=train_data_raw,
-                                                          tokenize=False)
+            w2_vec = data_.train_w2vec(params.input, params.embed_size,
+                                w2vec_it=5, sentences=data_dict.sentences,
+                                model_path="./trained_embeddings")
             embed_arr = np.zeros([data_dict.vocab_size, params.embed_size])
             for i in range(embed_arr.shape[0]):
                 if i == 0:

@@ -1,7 +1,7 @@
 class Parameters():
     # general parameters
     latent_size = 13  # std=13, inputless_dec(dec_keep_rate=0.0)=111
-    num_epochs = 150
+    num_epochs = 100
     learning_rate = 0.001
     batch_size = 50
     # for decoding
@@ -12,23 +12,24 @@ class Parameters():
     beam_size = 2
     # encoder
     rnn_layers = 1
-    encoder_hidden = 191  # std=191, inputless_dec=350
+    encoder_hidden = 350  # std=191, inputless_dec=350
     encode = 'hw' # 'hw' or 'mlp'
     # highway networks
     keep_rate = 1.0
     highway_lc = 2
     highway_ls = 600
     # decoder
-    decoder_hidden = 191
+    decoder_hidden = 350
     decoder_rnn_layers = 1
     dec_keep_rate = 0.62
     decode = 'hw' # can use 'hw', 'concat', 'mlp'
     # data
     datasets = ['GOT', 'PTB']
     embed_size = 353 # std=353, inputless_dec=499
-    sent_max_size = 300
+    sent_max_size = 100
     input = datasets[1]
     debug = False
+    vocab_drop = 3 # drop less than n times occured
     # use pretrained w2vec embeddings
     pre_trained_embed = True
     fine_tune_embed = True
@@ -47,8 +48,6 @@ class Parameters():
             "also can be directly specified in Parameters class")
         parser.add_argument('--dataset', default=self.input,
                             help='training dataset (GOT or PTB)', dest='data')
-        parser.add_argument('--ls', default=self.latent_size,
-                            help='latent space size', dest='ls')
         parser.add_argument('--lr', default=self.learning_rate,
                             help='learning rate', dest='lr')
         parser.add_argument('--embed_dim', default=self.embed_size,
@@ -68,17 +67,19 @@ class Parameters():
                             help='define mapping from z->lstm. mlp, concat, hw')
         parser.add_argument('--encode', default=self.encode,
                             help='define mapping from lstm->z. mlp, hw')
+        parser.add_argument('--vocab_drop', default=self.vocab_drop,
+                            help='drop less than')
 
         args = parser.parse_args()
         self.input = args.data
-        self.latent_size = args.ls
-        self.learning_rate = args.lr
-        self.embed_size = args.embed
-        self.encoder_hidden = args.enc_hid
-        self.decoder_hidden = args.dec_hid
-        self.latent_size = args.latent
-        self.dec_keep_rate = args.dec_drop
+        self.learning_rate = float(args.lr)
+        self.embed_size = int(args.embed)
+        self.encoder_hidden = int(args.enc_hid)
+        self.decoder_hidden = int(args.dec_hid)
+        self.latent_size = int(args.latent)
+        self.dec_keep_rate = float(args.dec_drop)
         self.beam_search = args.beam_search
-        self.beam_size = args.beam_size
+        self.beam_size = int(args.beam_size)
         self.decode = args.decode
         self.encode = args.encode
+        self.vocab_drop = int(args.vocab_drop)
