@@ -67,8 +67,12 @@ def q_net(encoder_input, seq_len, batch_size):
         # construct lstm
         # cell = tf.nn.rnn_cell.BasicLSTMCell(params.cell_hidden_size)
         # cells = tf.nn.rnn_cell.MultiRNNCell([cell]*params.rnn_layers)
+        if params.base_cell == 'lstm':
+          base_cell = tf.contrib.rnn.LSTMCell
+        else:
+          base_cell = tf.contrib.rnn.GRUCell
         cell = model.make_rnn_cell([params.decoder_hidden for _ in range(
-            params.decoder_rnn_layers)], base_cell=params.base_cell)
+            params.decoder_rnn_layers)], base_cell=base_cell)
         initial = cell.zero_state(batch_size, dtype=tf.float32)
         if params.keep_rate < 1:
             encoder_input = tf.nn.dropout(encoder_input, params.keep_rate)
@@ -117,9 +121,14 @@ def vae_lstm(observed, batch_size, d_seq_l, embed, d_inputs, vocab_size, gen_mod
             dec_inps = tf.nn.dropout(dec_inps, params.dec_keep_rate)
         max_sl = tf.shape(dec_inps)[1]
         # define cell
+        if params.base_cell == 'lstm':
+          base_cell = tf.contrib.rnn.LSTMCell
+        else:
+          # not working for now
+          base_cell = tf.contrib.rnn.GRUCell
         cell = model.make_rnn_cell([
           params.decoder_hidden for _ in range(
-            params.decoder_rnn_layers)], base_cell=params.base_cell)
+            params.decoder_rnn_layers)], base_cell=base_cell)
         if params.decode == 'hw':
             # Higway network [S.Sementiuta et.al]
             for i in range(params.highway_lc):
@@ -226,9 +235,10 @@ def main(params):
         rec_loss = tf.reduce_mean(mean_loss_by_example)
         perplexity = tf.exp(rec_loss)
         # kl divergence calculation
-        kld = -0.5 * tf.reduce_mean(tf.reduce_sum(1 + qz.distribution.logstd
-                                                  - tf.square(qz.distribution.mean)
-                                                  - tf.exp(qz.distribution.logstd), 1))
+        kld = -0.5 * tf.reduce_mean(tf.reduce_sum(
+            1 + (1e-8 + tf.square(qz.distribution.logstd))
+            - tf.square(qz.distribution.mean)
+            - tf.exp(tf.square(qz.distribution.logstd)), 0))
         tf.summary.scalar('kl_divergence', kld)
         # kld weight annealing
         anneal = tf.placeholder(tf.int32)

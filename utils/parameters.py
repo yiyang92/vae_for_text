@@ -38,11 +38,10 @@ class Parameters():
     LOG_DIR = './model_logs/'
     visualise = False
     # gru base cell partially implemented
-    import tensorflow as tf
-    base_cell = tf.contrib.rnn.LSTMCell
-    #base_cell = tf.contrib.rnn.GRUCell
+    base_cell = 'lstm' # or GRU
     def parse_args(self):
         import argparse
+        import os
         parser = argparse.ArgumentParser(
             description="Specify some parameters, all parameters "
             "also can be directly specified in Parameters class")
@@ -69,6 +68,7 @@ class Parameters():
                             help='define mapping from lstm->z. mlp, hw')
         parser.add_argument('--vocab_drop', default=self.vocab_drop,
                             help='drop less than')
+        parser.add_argument('--gpu', help="specify GPU number")
 
         args = parser.parse_args()
         self.input = args.data
@@ -83,3 +83,5 @@ class Parameters():
         self.decode = args.decode
         self.encode = args.encode
         self.vocab_drop = int(args.vocab_drop)
+        os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
+        os.environ["CUDA_VISIBLE_DEVICES"]=args.gpu

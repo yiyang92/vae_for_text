@@ -1,7 +1,7 @@
 from __future__ import print_function
 from __future__ import absolute_import
 
-import tensorflow as tf
+
 import numpy as np
 import tqdm
 
@@ -23,8 +23,12 @@ params = {
     'temperature': 0.5,
     'keep_rate': 0.66,
     'input': ['GOT', 'PTB'][1],
-    'vocab_drop': 3
+    'vocab_drop': 3,
+    'gpu': 0
 }
+os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
+os.environ["CUDA_VISIBLE_DEVICES"]=params['gpu']
+import tensorflow as tf
 # for back compatibility
 params_c = Parameters()
 params_c.batch_size = params['batch_size']
