@@ -43,10 +43,10 @@ def weight_bias(W_shape, b_shape, bias_init=0.1):
     b = tf.get_variable(name='bias1',
                         shape=b_shape,
                         dtype=tf.float32,
-                        initializer=tf.constant_initializer(0.1))
+                        initializer=tf.constant_initializer(bias_init))
     return W, b
 
-def highway_network(x, size, carry_bias=-1.0, scope='enc'):
+def highway_network(x, size, carry_bias=-1, scope='enc'):
     W, b = weight_bias([size, size], [size])
 
     with tf.variable_scope('transform_gate{}'.format(scope)):

@@ -132,7 +132,7 @@ def vae_lstm(observed, batch_size, d_seq_l, embed, d_inputs, vocab_size, gen_mod
         if params.decode == 'hw':
             # Higway network [S.Sementiuta et.al]
             for i in range(params.highway_lc):
-                with tf.variable_scope("hw_layer_enc{0}".format(i)) as scope:
+                with tf.variable_scope("hw_layer_dec{0}".format(i)) as scope:
                     if i == 0:  # first, input layer
                         prev_y = tf.layers.dense(z,
                                                  params.decoder_hidden * 2)
@@ -235,10 +235,11 @@ def main(params):
         rec_loss = tf.reduce_mean(mean_loss_by_example)
         perplexity = tf.exp(rec_loss)
         # kl divergence calculation
-        kld = -0.5 * tf.reduce_mean(tf.reduce_sum(
-            1 + (1e-8 + tf.square(qz.distribution.logstd))
-            - tf.square(qz.distribution.mean)
-            - tf.exp(tf.square(qz.distribution.logstd)), 0))
+        kld = -0.5 * tf.reduce_mean(
+                tf.reduce_sum(
+                    1 + tf.log(tf.square(qz.distribution.std) + 0.0001)
+                    - tf.square(qz.distribution.mean)
+                    - tf.square(qz.distribution.std), 1))
         tf.summary.scalar('kl_divergence', kld)
         # kld weight annealing
         anneal = tf.placeholder(tf.int32)
